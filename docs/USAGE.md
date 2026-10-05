@@ -22,7 +22,7 @@ This file ships inside images as `/opt/astroai/USAGE.md`.
 
 ### Home base: AstroAI Studio (coding portal)
 
-1. Launch **`studio`** with tag `26.09` / `latest`.
+1. Launch **`studio`** with tag `26.10` / `latest`.
 2. Open the connect URL — DeepSeek Harness (`dsh`) coding agent in the browser.
 3. Top-right chips (same as openresearch):
    - **Terminal** → `/astroai-terminal/` (ghostty-web + tmux; **← Studio** returns)
@@ -31,12 +31,12 @@ This file ships inside images as `/opt/astroai/USAGE.md`.
 5. Laptop: `astroai studio` (same stack, no Skaha proxy).
 
 ```bash
-canfar create --name studio contributed images.canfar.net/astroai/studio:26.09
+canfar create --name studio contributed images.canfar.net/astroai/studio:26.10
 ```
 
 ### Alternate home base: AstroAI hub (openresearch)
 
-1. Launch **`openresearch`** with tag `26.09` / `latest`.
+1. Launch **`openresearch`** with tag `26.10` / `latest`.
 2. Open the connect URL, then either:
    - click the blue **AstroAI** chip (top-right), or
    - append `/astroai-agents/` (e.g. `…/session/contrib/<id>/astroai-agents/`).
@@ -52,7 +52,7 @@ canfar create --name studio contributed images.canfar.net/astroai/studio:26.09
 
 ```bash
 canfar login   # once, from terminal — persists under /arc/home
-canfar create --name orx contributed images.canfar.net/astroai/openresearch:26.09
+canfar create --name orx contributed images.canfar.net/astroai/openresearch:26.10
 canfar open <session-id>
 # Hub: …/astroai-agents/ → Start batch compute
 ```

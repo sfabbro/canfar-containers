@@ -17,7 +17,7 @@ variable "PYTHON_VERSION" {
 }
 
 variable "DSH_VERSION" {
-  default = "0.1.5-rc.3"
+  default = "0.2.1-alpha.1"
 }
 
 variable "DSH_CACHEBUST" {

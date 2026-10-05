@@ -8,13 +8,14 @@ ARG REGISTRY=images.canfar.net
 ARG OWNER=astroai
 ARG BASE_NAME=base
 ARG TAG=local
-# Pinned: 0.1.7 moves settings.yaml into its own store, which canfar-lab still writes.
-ARG DSH_VERSION=0.1.5-rc.3
+# deepseek-ai/deepseek-harness master (tag dsh-v0.2.1-alpha.1).
+# 0.1.7+ stores Models in the profile patch and imports settings.yaml once.
+ARG DSH_VERSION=0.2.1-alpha.1
 ARG DSH_CACHEBUST=1
 # One pnpm for the image and every user: a node_modules built by one pnpm
 # major and changed by another fails with a layout error.
 ARG PNPM_VERSION=12.6.0
-ARG DSHMARKET_VERSION=1.66.5
+ARG DSHMARKET_VERSION=1.66.9
 ARG GHOSTTY_WEB_VERSION=0.4.0-next.20.g1858a59
 ARG NODE_PTY_VERSION=1.1.0
 ARG WS_VERSION=8.21.3
@@ -59,8 +60,14 @@ RUN npm install -g --prefix /opt/astroai "@deepseek-ai/dsh@${DSH_VERSION}" \
 # here that declares a dsh bundle into ~/.dsh/profiles/astroai and enables it.
 RUN mkdir -p /opt/astroai/dsh-plugins \
     && cd /opt/astroai/dsh-plugins \
-    && printf '{"name":"astroai-dsh-plugins","private":true,"dependencies":{"dshmarket":"%s"}}\n' \
-        "${DSHMARKET_VERSION}" > package.json \
+    && printf '%s\n' \
+        '{' \
+        '  "name": "astroai-dsh-plugins",' \
+        '  "private": true,' \
+        '  "dependencies": {"dshmarket": "'"${DSHMARKET_VERSION}"'"},' \
+        '  "pnpm": {"peerDependencyRules": {"allowedVersions": {"@deepseek-ai/dsh-settings": "'"${DSH_VERSION}"'"}}}' \
+        '}' \
+        > package.json \
     && printf 'nodeLinker: hoisted\n' > pnpm-workspace.yaml \
     && pnpm install --prod \
     && test -f node_modules/dshmarket/cordis.patch.yml \

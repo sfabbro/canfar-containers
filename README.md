@@ -89,7 +89,7 @@ make push-ray TAG=26.09
 make push-improc TAG=26.09
 ```
 
-Default `TAG` is current UTC `YY.MM` (for example `26.09`).
+Default `TAG` is current UTC `YY.MM` (for example `26.10`).
 
 ## Layout
 
