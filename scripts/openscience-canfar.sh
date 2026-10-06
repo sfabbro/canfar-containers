@@ -30,7 +30,7 @@ export OPENSCIENCE_SKIP_ENVIRONMENT_BOOTSTRAP=1
 if [[ -x "${SCIENCE_VENV}/bin/python3" ]]; then
     export PATH="${SCIENCE_VENV}/bin:${PATH}"
 fi
-export PATH="${PATH}:/opt/astroai/venv/cadc/bin"
+export PATH="${PATH}:/opt/canfar/bin"
 
 owner="${skaha_sessionid:-$(hostname 2>/dev/null || echo local)}"
 

@@ -294,7 +294,7 @@ def _forward(
             fallback = (
                 b"<!DOCTYPE html><html><body style='font-family:sans-serif;padding:2rem'>"
                 b"<h1>Agents unavailable</h1>"
-                b"<p>Use terminal and run <code>astroai agent list --ui</code>.</p>"
+                b"<p>Use terminal and run <code>canfar-lab agent list --ui</code>.</p>"
                 b"</body></html>"
             )
             handler.send_response(503)

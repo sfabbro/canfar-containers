@@ -1,15 +1,15 @@
 #!/usr/bin/bash
-# Upgrade packages in /opt/astroai/venv/cadc (user-writable in AstroAI session images).
+# Upgrade packages in /opt/canfar (user-writable in AstroAI session images).
 set -euo pipefail
 
-CADC_VENV="/opt/astroai/venv/cadc"
+CADC_VENV="/opt/canfar"
 PY="${CADC_VENV}/bin/python"
 
 usage() {
     cat <<'EOF'
 Usage: upgrade-cadc-tools.sh [<uv pip install args>...]
 
-Upgrade platform CADC/CANFAR Python tools in /opt/astroai/venv/cadc.
+Upgrade platform CADC/CANFAR Python tools in /opt/canfar.
 Changes last for this session only — start a new session (or image tag) for
 a clean slate; use a new image release for fleet-wide updates.
 

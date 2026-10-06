@@ -61,7 +61,7 @@ flowchart TB
 | [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) | Developers — clone, build, test, PRs |
 | [docs/OPERATORS.md](docs/OPERATORS.md) | Maintainers — push, register, smoke tests |
 
-In-session: `astroai help` · `less /opt/astroai/USAGE.md`
+In-session: `canfar-lab help` · `less /opt/astroai/USAGE.md`
 
 ## Build and test
 
@@ -106,7 +106,7 @@ examples/ray/  container-local Ray smokes
 
 - **Same images for CPU and GPU** — choose the node in the portal; CUDA/ML stacks via pixi/uv in the project.
 - **Bake graph:** untagged `python` stage → fat `base` (compilers + session tools) → interactive sessions and `improc`; slim `ray-base` (from that python stage) → `ray-worker`; fat `base` → `ray-manager`. `python` is not published to Harbor.
-- **Fast session disks:** `WORK` is `$SCRATCH/src` when `/srcdir` is the container overlay (OOM-fragile) and `/scratch` is a volume; `SCRATCH` (`/scratch`) holds data and caches. Both are session-private. `/arc/home` and `/arc/projects` are shared across sessions. Persist with `astroai save` / `git push`.
+- **Fast session disks:** `WORK` is `$SCRATCH/src` when `/srcdir` is the container overlay (OOM-fragile) and `/scratch` is a volume; `SCRATCH` (`/scratch`) holds data and caches. Both are session-private. `/arc/home` and `/arc/projects` are shared across sessions. Persist with `canfar-lab save` / `git push`.
 - **Skaha types:** Contributed listen on **5000**; Notebook on **8888**.
 - **Auth at the edge:** Session UIs trust CANFAR TLS + portal login. Use these images only behind an authenticating reverse proxy.
 

@@ -184,7 +184,7 @@ make test-canfar-session IMAGE=openscience TAG=26.09
 **Agent auto-setup:** UI kinds (`openresearch`, `vscode`, `studio`) default `ASTROAI_LAB_AGENT_SETUP=bg` when unset. **Marimo** stays opt-in for full setup (startup still runs `agent setup marimo` only). Terminal stays opt-in. Failures never block the main UI; see `~/.astroai/lab/agent-setup.log`.
 
 **Studio notes:** Image bakes `@deepseek-ai/dsh@0.2.1-alpha.1` (deepseek-harness master) + pnpm (pins in Dockerfile).
-Startup runs sync `astroai studio --prepare --profile canfar --no-install`,
+Startup runs sync `canfar-lab studio --prepare --profile canfar --no-install`,
 then `dsh --profile astroai` on loopback `:3080` and `studio-canfar-proxy.py`
 on `:5000`. pnpm/TMPDIR land on session scratch. See [STUDIO.md](STUDIO.md).
 pnpm (`PNPM_VERSION`) lives in `COREPACK_HOME=/opt/corepack` so every user
@@ -261,8 +261,8 @@ While headless is unhealthy:
 |----------------|-----|
 | `canfar logs <session-id>` | Container stdout/stderr — look for `[astroai-boot]` breadcrumbs |
 | `~/.astroai/lab/boot.log` | Same trail on `/arc/home` (still readable after the pod is gone) |
-| `~/.astroai/lab/agent-setup.log` | Background `astroai agent setup` detail |
-| `astroai status --json` | Quotas, projects, `canfar ps` |
+| `~/.astroai/lab/agent-setup.log` | Background `canfar-lab agent setup` detail |
+| `canfar-lab status --json` | Quotas, projects, `canfar ps` |
 
 Failed / crashed sessions: `canfar logs` keeps Skaha’s copy of stderr until the
 session record ages out. Prefer grepping `[astroai-boot]` for `common-init:ERR`,
@@ -271,14 +271,14 @@ session record ages out. Prefer grepping `[astroai-boot]` for `common-init:ERR`,
 
 ## Agents and quota (operator view)
 
-- Agents install on demand via `astroai agent install` into `$SCRATCH/.local/bin`
+- Agents install on demand via `canfar-lab agent install` into `$SCRATCH/.local/bin`
   (`CANFAR_LAB_BIN_DIR`) — prefer that over baking agent binaries into images
   or installing onto `/arc` home (NFS is too slow). Skills:
   `npx skills add astroai/canfar-skills`.
-- **Plugins vs skills:** images bake `astroai-lab` from `config/astroai-lab.lock`. That package's plugins are **MCP / tools / rules only**. Skill packs (`SKILL.md`) install via `npx skills add astroai/canfar-skills` (skills.sh), not `astroai agent plugins`.
+- **Plugins vs skills:** images bake `astroai-lab` from `config/astroai-lab.lock`. That package's plugins are **MCP / tools / rules only**. Skill packs (`SKILL.md`) install via `npx skills add astroai/canfar-skills` (skills.sh), not `canfar-lab agent plugins`.
 - **Release order:** merge/push `astroai-lab` first → `make lock-astroai-lab` here → rebuild/push images. Skipping the lock leaves Harbor on an older lab that still managed skills as plugins.
-- Quota warnings fire at session start and via `astroai status` (≈80 / 90 / 95%).
-- User data lifecycle (`astroai save`, `canfar data`) is documented for users in [USAGE.md](USAGE.md).
+- Quota warnings fire at session start and via `canfar-lab status` (≈80 / 90 / 95%).
+- User data lifecycle (`canfar-lab save`, `canfar data`) is documented for users in [USAGE.md](USAGE.md).
 
 ## User-facing docs
 

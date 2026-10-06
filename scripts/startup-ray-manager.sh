@@ -23,7 +23,7 @@ fi
 
 # Per-session manager overrides (e.g. RAY_AUTOSCALING_ENABLED=1) live on the
 # user home because Skaha does not pass -e env to contributed sessions. The
-# `astroai autoscaler` can then be enabled for a single manager session
+# `canfar-lab autoscaler` can then be enabled for a single manager session
 # by writing ~/.config/canfar/lab/ray-manager.env from a terminal (or by the
 # test harness bootstrap) before launching the manager.
 if [[ -f "${HOME}/.config/canfar/lab/ray-manager.env" ]]; then
@@ -61,8 +61,8 @@ export RAY_NODE_IP_ADDRESS="${RAY_NODE_IP_ADDRESS:-$(hostname -i | awk '{print $
 _srv="${CANFAR_ACTIVE_SERVER:-${ACTIVE_SERVER:-}}"
 if [[ -n "${_srv}" ]]; then
     CANFAR_BIN="$(command -v canfar || true)"
-    if [[ -z "${CANFAR_BIN}" && -x /opt/astroai/venv/cadc/bin/canfar ]]; then
-        CANFAR_BIN=/opt/astroai/venv/cadc/bin/canfar
+    if [[ -z "${CANFAR_BIN}" && -x /opt/canfar/bin/canfar ]]; then
+        CANFAR_BIN=/opt/canfar/bin/canfar
     fi
     if [[ -n "${CANFAR_BIN}" ]]; then
         if ! "${CANFAR_BIN}" config set active.server "${_srv}" >/dev/null 2>&1; then

@@ -72,7 +72,7 @@ KEY_SAVED_NOTE = {
 TERMINAL_IN_APP = SESSION_KIND == "openscience"
 TERMINAL_LABEL = "Terminal in an OpenScience project" if TERMINAL_IN_APP else "Terminal"
 # OpenResearch needs orx config wired to the Jobs URL. Studio only needs the
-# ray-manager / Jobs URL (astroai cluster); do not require wire_orx.
+# ray-manager / Jobs URL (canfar-lab cluster); do not require wire_orx.
 WIRE_ORX = SESSION_KIND == "openresearch"
 # Legacy alias used by older tests / call sites.
 WIRE_OPENRESEARCH = WIRE_ORX
@@ -104,9 +104,7 @@ def _run_cmd(
 def _lab_bin() -> str:
     for candidate in (
         shutil.which("canfar-lab"),
-        "/opt/astroai/venv/cadc/bin/canfar-lab",
-        shutil.which("astroai"),
-        "/opt/astroai/venv/cadc/bin/astroai",
+        "/opt/canfar/bin/canfar-lab",
     ):
         if candidate and os.access(candidate, os.X_OK):
             return candidate
@@ -273,7 +271,7 @@ def _ray_status() -> dict[str, Any]:
     if compute_ready and WIRE_ORX:
         hint = "Batch compute ready — go back and run experiments."
     elif compute_ready:
-        hint = "Batch compute ready — use `astroai run` / cluster jobs for heavy work."
+        hint = "Batch compute ready — use `canfar-lab run` / cluster jobs for heavy work."
     elif running and WIRE_ORX and not wired:
         hint = "Manager is Running — click Start batch compute to wire OpenResearch."
     elif running:
@@ -710,7 +708,7 @@ def _compute_ensure() -> dict[str, Any]:
                 "ok": False,
                 "summary": "manager present but cluster start failed",
                 "user_message": (
-                    f"astroai cluster start failed: {(ensure_err or ensure_out or 'unknown')[:600]}"
+                    f"canfar-lab cluster start failed: {(ensure_err or ensure_out or 'unknown')[:600]}"
                 ),
                 "error": (ensure_err or ensure_out or "")[:800],
                 "steps": steps,

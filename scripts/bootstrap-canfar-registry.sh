@@ -48,8 +48,8 @@ echo "registry config persisted"
 # Align Skaha target with the cluster the manager/workers should use.
 if [[ -n "${ACTIVE_SERVER:-}" ]]; then
     CANFAR_BIN="$(command -v canfar || true)"
-    if [[ -z "${CANFAR_BIN}" && -x /opt/astroai/venv/cadc/bin/canfar ]]; then
-        CANFAR_BIN=/opt/astroai/venv/cadc/bin/canfar
+    if [[ -z "${CANFAR_BIN}" && -x /opt/canfar/bin/canfar ]]; then
+        CANFAR_BIN=/opt/canfar/bin/canfar
     fi
     if [[ -z "${CANFAR_BIN}" ]]; then
         echo "canfar CLI missing — could not set active.server=${ACTIVE_SERVER}" >&2

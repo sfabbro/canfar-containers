@@ -77,7 +77,7 @@ After profile or base changes:
 ./scripts/test-local.sh terminal 5000
 # inside container:
 source /etc/profile.d/astroai.sh
-astroai status
+canfar-lab status
 uv run python -c "print('ok')"
 ```
 
@@ -101,8 +101,8 @@ Same pattern for `make lock-ray` when unpinned Ray deps move. OpenResearch pins 
 
 ## Writable CADC venv
 
-`/opt/astroai/venv/cadc` is writable so users can run `upgrade-cadc-tools.sh` or
-`uv pip install --python /opt/astroai/venv/cadc …` for this session only.
+`/opt/canfar` is writable so users can run `upgrade-cadc-tools.sh` or
+`uv pip install --python /opt/canfar …` for this session only.
 Project deps use pixi/uv under `WORK`; caches prefer scratch via
 `astroai`.
 
@@ -138,7 +138,7 @@ make sync-marimo-starter
 
 Startup (`scripts/startup-marimo.sh`) seeds that file once into
 `WORK/notebooks`, sources `~/.astroai/lab/.env` / `agent-env.sh`, runs
-`astroai agent setup marimo` (OpenRouter into shared `.env` + `~/.marimo.toml`,
+`canfar-lab agent setup marimo` (OpenRouter into shared `.env` + `~/.marimo.toml`,
 does not overwrite user settings), and opens `starter.py`. Keep
 `canfar_marimo.VOSpaceUI` until vos fsspec lands. Project env activation for
 cloned repos is `canfar_marimo.use_project` / `project_env_controls` in the

@@ -71,10 +71,10 @@ echo "=========================="
 if [[ "${AGENTS}" -eq 0 ]]; then
 process_batch < <(batch_login <<'CHECK_BATCH'
 # PATH
-[[ ":${PATH}:" == *":/opt/astroai/venv/cadc/bin:"* ]] && echo "PASS:astroai-profile on PATH" || echo "FAIL:astroai-profile on PATH"
+[[ ":${PATH}:" == *":/opt/canfar/bin:"* ]] && echo "PASS:astroai-profile on PATH" || echo "FAIL:astroai-profile on PATH"
 
 # CADC + bundled CLIs
-for t in canfar cadcget cadcput cadc-tap vcp vls cadc-get-cert astroai peek; do
+for t in canfar cadcget cadcput cadc-tap vcp vls cadc-get-cert canfar-lab peek; do
     command -v "$t" >/dev/null 2>&1 && echo "PASS:login shell: ${t}" || echo "FAIL:login shell: ${t}"
 done
 
@@ -97,16 +97,16 @@ fi
 # ================================================================
 if [[ "${AGENTS}" -eq 0 ]]; then
 process_batch < <(batch_login <<'CHECK_BATCH'
-astroai status --json >/dev/null 2>&1 && echo "PASS:astroai status" || echo "FAIL:astroai status"
-astroai env export --json | grep -q '"WORK"' && echo "PASS:astroai env export" || echo "FAIL:astroai env export"
-astroai save --list --json >/dev/null 2>&1 && echo "PASS:astroai save --list" || echo "FAIL:astroai save --list"
-astroai agent list >/dev/null 2>&1 && echo "PASS:astroai agent list" || echo "FAIL:astroai agent list"
+canfar-lab status --json >/dev/null 2>&1 && echo "PASS:canfar-lab status" || echo "FAIL:canfar-lab status"
+canfar-lab env export --json | grep -q '"WORK"' && echo "PASS:canfar-lab env export" || echo "FAIL:canfar-lab env export"
+canfar-lab save --list --json >/dev/null 2>&1 && echo "PASS:canfar-lab save --list" || echo "FAIL:canfar-lab save --list"
+canfar-lab agent list >/dev/null 2>&1 && echo "PASS:canfar-lab agent list" || echo "FAIL:canfar-lab agent list"
 
 # WORK relocate: /srcdir on the overlay (same device as /) + writable /scratch
 # on another volume → $SCRATCH/src. Bind-mounted /srcdir must stay put.
 # Mirrors astroai_lab.core.session_common.overlay_work_dir.
 flag="$(printf '%s' "${CANFAR_LAB_WORK_ON_SCRATCH:-}" | tr '[:upper:]' '[:lower:]')"
-exported="$(astroai env export --json | python3 -c 'import json,sys; print(json.load(sys.stdin).get("WORK",""))' 2>/dev/null || true)"
+exported="$(canfar-lab env export --json | python3 -c 'import json,sys; print(json.load(sys.stdin).get("WORK",""))' 2>/dev/null || true)"
 case "${flag}" in
     0|false|no|off)
         echo "PASS:WORK relocate disabled"
@@ -157,7 +157,7 @@ check() {
     fi
 }
 
-check "CADC venv writable" test -w /opt/astroai/venv/cadc
+check "CADC venv writable" test -w /opt/canfar
 check "upgrade-cadc-tools helper" test -x /opt/astroai/bin/upgrade-cadc-tools.sh
 check "peek helper" test -x /opt/astroai/bin/peek
 fi
@@ -210,7 +210,7 @@ if [[ -d "${SCRATCH}" && -w "${SCRATCH}" ]]; then
     [[ "${CANFAR_LAB_RUNTIME_ROOT}" == "${SCRATCH}/"* ]] && echo "PASS:CANFAR_LAB_RUNTIME_ROOT on scratch" || echo "FAIL:CANFAR_LAB_RUNTIME_ROOT on scratch"
     [[ "${UV_PYTHON_INSTALL_DIR}" != "${HOME}/"* ]] && echo "PASS:UV_PYTHON_INSTALL_DIR off home" || echo "FAIL:UV_PYTHON_INSTALL_DIR off home"
     [[ "${PIXI_HOME}" != "${HOME}/.pixi" ]] && echo "PASS:PIXI_HOME off home when scratch mounted" || echo "FAIL:PIXI_HOME off home when scratch mounted"
-    astroai env export --no-ensure | grep -q CANFAR_LAB_BIN_DIR && echo "PASS:astroai env export" || echo "FAIL:astroai env export"
+    canfar-lab env export --no-ensure | grep -q CANFAR_LAB_BIN_DIR && echo "PASS:canfar-lab env export" || echo "FAIL:canfar-lab env export"
 elif [[ -n "${WORK:-}" ]]; then
     for var in XDG_CACHE_HOME UV_CACHE_DIR PIXI_CACHE_DIR RATTLER_CACHE_DIR PIP_CACHE_DIR NPM_CONFIG_CACHE MAMBA_PKGS_DIRS CONDA_PKGS_DIRS; do
         [[ "${!var}" == "${WORK}" || "${!var}" == "${WORK}/"* ]] && echo "PASS:${var} under WORK" || echo "FAIL:${var} under WORK"

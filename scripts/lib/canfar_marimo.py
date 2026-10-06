@@ -81,7 +81,7 @@ def work_dir() -> pathlib.Path:
 
 
 def list_projects(root: pathlib.Path | None = None) -> list[pathlib.Path]:
-    """Return project dirs under ``$WORK`` (from ``astroai clone`` / ``init``)."""
+    """Return project dirs under ``$WORK`` (from ``canfar-lab clone`` / ``init``)."""
     root = root or work_dir()
     found: list[pathlib.Path] = []
     if not root.is_dir():
@@ -251,7 +251,7 @@ def use_project(project: str | pathlib.Path | None = None, quiet: bool = False) 
         if detected is None:
             raise FileNotFoundError(
                 "No project directory specified and could not auto-detect one under current path or $WORK. "
-                "Specify project directory or clone one first via `astroai clone <repo>`."
+                "Specify project directory or clone one first via `canfar-lab clone <repo>`."
             )
         project = detected
 
@@ -545,7 +545,7 @@ def project_env_controls() -> SimpleNamespace:
     )
     btn = mo.ui.button(label="Activate env")
     header = mo.md(
-        "Pick a project from `astroai clone` / `astroai init`, then activate "
+        "Pick a project from `canfar-lab clone` / `canfar-lab init`, then activate "
         "its `.pixi` / `.venv`. Note: notebooks opened inside a project directory "
         "auto-discover their environment automatically! "
         "Shell: **Ctrl-`**."

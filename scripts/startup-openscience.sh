@@ -33,7 +33,7 @@ source /cadc/common-init.sh
 # shellcheck disable=SC1091
 source /opt/astroai/lib/skaha-proxy.sh
 
-export PATH="/opt/astroai/venv/cadc/bin:/opt/astroai/bin:${PATH}"
+export PATH="/opt/canfar/bin:/opt/astroai/bin:${PATH}"
 # Projects are opened from the UI; start where persistent files live.
 _os_cwd="${ASTROAI_OPENSCIENCE_CWD:-${HOME}}"
 
@@ -47,7 +47,7 @@ trap cleanup EXIT INT TERM
 
 _LAB_BIN="canfar-lab"
 if ! command -v "${_LAB_BIN}" >/dev/null 2>&1; then
-    _LAB_BIN="/opt/astroai/venv/cadc/bin/canfar-lab"
+    _LAB_BIN="/opt/canfar/bin/canfar-lab"
 fi
 # MCP tools, instructions, skills, approvals and sandbox defaults (merged, never
 # clobbering user settings).

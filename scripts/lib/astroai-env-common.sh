@@ -159,10 +159,10 @@ astroai_check_quota() {
         astroai_warn "  ⚠  ${label}: ${used_pct}% used — CRITICAL (near quota limit)"
         return 2
     elif [[ "${used_pct}" -ge 90 ]]; then
-        astroai_warn "  ⚠  ${label}: ${used_pct}% used — prune caches soon (check astroai status)"
+        astroai_warn "  ⚠  ${label}: ${used_pct}% used — prune caches soon (check canfar-lab status)"
         return 1
     elif [[ "${used_pct}" -ge 80 ]]; then
-        astroai_warn "  ⚠  ${label}: ${used_pct}% used — monitor (astroai status)"
+        astroai_warn "  ⚠  ${label}: ${used_pct}% used — monitor (canfar-lab status)"
         return 1
     fi
     return 0

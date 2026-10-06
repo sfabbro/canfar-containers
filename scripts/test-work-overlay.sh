@@ -61,7 +61,7 @@ overlay_probe() {
         "${IMAGE}" \
         bash -c '
 set -e
-export PATH="/opt/astroai/venv/cadc/bin:/opt/astroai/bin:${PATH}"
+export PATH="/opt/canfar/bin:/opt/astroai/bin:${PATH}"
 printf "seed\n" > /srcdir/from-overlay.txt
 # shellcheck disable=SC1091
 source /etc/profile.d/astroai.sh >/dev/null
@@ -99,7 +99,7 @@ BIND_OUT="$(docker run --rm \
     "${IMAGE}" \
     bash -c '
 set -e
-export PATH="/opt/astroai/venv/cadc/bin:/opt/astroai/bin:${PATH}"
+export PATH="/opt/canfar/bin:/opt/astroai/bin:${PATH}"
 # shellcheck disable=SC1091
 source /etc/profile.d/astroai.sh >/dev/null
 printf "WORK=%s\n" "${WORK}"

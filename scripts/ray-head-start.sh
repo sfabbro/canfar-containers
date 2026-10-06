@@ -26,20 +26,20 @@ export RAY_spill_dir="${spill_root}"
 
 # Ray-native autoscaling: when enabled, write the CANFAR node-provider config
 # and hand it to `ray start --head` so Ray's own autoscaler launches/destroys
-# ray-worker sessions on demand (see `astroai autoscaler`).
+# ray-worker sessions on demand (see `canfar-lab autoscaler`).
 autoscaling_args=()
 if [[ "${RAY_AUTOSCALING_ENABLED:-0}" == "1" ]]; then
     autoscaling_cfg="${RAY_AUTOSCALING_CONFIG:-${spill_root}/autoscaling.yaml}"
-    astroai_cli="${ASTROAI_BIN:-/opt/astroai/venv/ray/bin/astroai}"
-    if [[ ! -x "${astroai_cli}" ]]; then
-        echo "Warning: RAY_AUTOSCALING_ENABLED=1 but ${astroai_cli} missing — skipping autoscaling config" >&2
+    lab_cli="${ASTROAI_BIN:-/opt/astroai/venv/ray/bin/canfar-lab}"
+    if [[ ! -x "${lab_cli}" ]]; then
+        echo "Warning: RAY_AUTOSCALING_ENABLED=1 but ${lab_cli} missing — skipping autoscaling config" >&2
     else
         # Explicit idle-timeout knob (otherwise defaults to env or 5m).
         idle_args=()
         if [[ -n "${RAY_AUTOSCALING_IDLE_TIMEOUT_MINUTES:-}" ]]; then
             idle_args=(--idle-timeout-minutes "${RAY_AUTOSCALING_IDLE_TIMEOUT_MINUTES}")
         fi
-        "${astroai_cli}" autoscaler write-config \
+        "${lab_cli}" autoscaler write-config \
             --path "${autoscaling_cfg}" \
             --cluster-name "${cluster_id}" \
             --workers "${RAY_AUTOSCALING_MIN_WORKERS:-0}" \

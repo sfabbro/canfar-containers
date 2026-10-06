@@ -3,7 +3,7 @@
 # Fix clint SyntaxWarnings on Python 3.12+ (unmaintained dependency of cadcdata).
 set -euo pipefail
 
-VENV="${1:-/opt/astroai/venv/cadc}"
+VENV="${1:-/opt/canfar}"
 
 shopt -s nullglob
 for colored in "${VENV}"/lib/python*/site-packages/clint/textui/colored.py; do

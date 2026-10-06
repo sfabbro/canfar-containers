@@ -40,17 +40,16 @@ RUN mkdir -p /opt/astroai/{bin,cache,lib,venv} /cadc "${WORK}" \
 
 # Minimal lab install (resume/save/paths) — no full CADC kitchen sink on workers.
 COPY config/astroai-lab.in config/astroai-lab.lock /tmp/
-RUN uv venv /opt/astroai/venv/cadc \
-    && uv pip install --python /opt/astroai/venv/cadc --requirements /tmp/astroai-lab.lock \
-    && ln -sf canfar-lab /opt/astroai/venv/cadc/bin/astroai \
-    && chmod -R a+rwX /opt/astroai/venv/cadc \
+RUN uv venv /opt/canfar \
+    && uv pip install --python /opt/canfar --requirements /tmp/astroai-lab.lock \
+    && chmod -R a+rwX /opt/canfar \
     && mkdir -p /etc/astroai-lab \
-    && /opt/astroai/venv/cadc/bin/python -c "import importlib.resources as r, shutil; p=r.files('canfar_lab.data.shell'); shutil.copy(p.joinpath('profile.sh'), '/etc/astroai-lab/profile.sh'); shutil.copy(p.joinpath('hooks.sh'), '/etc/astroai-lab/hooks.sh')" \
+    && /opt/canfar/bin/python -c "import importlib.resources as r, shutil; p=r.files('canfar_lab.data.shell'); shutil.copy(p.joinpath('profile.sh'), '/etc/astroai-lab/profile.sh'); shutil.copy(p.joinpath('hooks.sh'), '/etc/astroai-lab/hooks.sh')" \
     && chmod a+r /etc/astroai-lab/profile.sh /etc/astroai-lab/hooks.sh \
     && test -f /etc/astroai-lab/profile.sh \
     && test -f /etc/astroai-lab/hooks.sh \
     && HOME=/tmp WORK=/srcdir SCRATCH=/scratch \
-       /opt/astroai/venv/cadc/bin/canfar-lab env export --no-ensure >/dev/null
+       /opt/canfar/bin/canfar-lab env export --no-ensure >/dev/null
 
 COPY scripts/lib/astroai-env-common.sh scripts/lib/astroai-ui.sh /opt/astroai/lib/
 COPY config/ray-deps.txt config/ray-deps.lock /tmp/
@@ -62,7 +61,7 @@ RUN uv venv /opt/astroai/venv/ray \
         > /opt/astroai/ray-version.txt \
     && chmod a+r /opt/astroai/ray-version.txt
 
-ENV PATH="/opt/astroai/venv/ray/bin:/opt/astroai/venv/cadc/bin:${PATH}"
+ENV PATH="/opt/astroai/venv/ray/bin:/opt/canfar/bin:${PATH}"
 
 COPY ray/worker/start-worker.sh /opt/astroai/bin/start-ray-worker.sh
 COPY scripts/ray-head-start.sh /opt/astroai/bin/ray-head-start.sh

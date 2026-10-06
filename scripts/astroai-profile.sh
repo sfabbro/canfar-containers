@@ -7,17 +7,17 @@ if [ -z "${BASH_VERSION:-}" ]; then
 fi
 
 # Source dir: SRCDIR (user) > Skaha TMP_SRC_DIR > WORK > /srcdir.
-# WORK is kept as an alias of SRCDIR. astroai env export then relocates
+# WORK is kept as an alias of SRCDIR. canfar-lab env export then relocates
 # both to $SCRATCH/src when /srcdir is the container overlay (wiped on
 # OOM restart) and /scratch is a real volume.
 export SRCDIR="${SRCDIR:-${TMP_SRC_DIR:-${WORK:-/srcdir}}}"
 export WORK="${SRCDIR}"
 export SCRATCH="${TMP_SCRATCH_DIR:-${SCRATCH:-/scratch}}"
 
-# CADC venv first — astroai env export runs from profile.sh below.
+# Platform clients (/opt/canfar) first — canfar-lab env export runs from profile.sh below.
 case ":${PATH}:" in
-    *":/opt/astroai/venv/cadc/bin:"*) ;;
-    *) export PATH="/opt/astroai/venv/cadc/bin:/opt/astroai/bin:${PATH}" ;;
+    *":/opt/canfar/bin:"*) ;;
+    *) export PATH="/opt/canfar/bin:/opt/astroai/bin:${PATH}" ;;
 esac
 
 [[ -f /etc/astroai-lab/profile.sh ]] && source /etc/astroai-lab/profile.sh

@@ -37,11 +37,11 @@ ln -sfn /arc "${NOTEBOOKS_DIR}/📁_arc" 2>/dev/null || true
 
 cd "${NOTEBOOKS_DIR}"
 
-# Ensure marimo AI config exists with OpenRouter API key (astroai agent setup marimo).
+# Ensure marimo AI config exists with OpenRouter API key (canfar-lab agent setup marimo).
 # Non-destructive: only creates/seeds ~/.marimo.toml on first launch; never overwrites.
 # Also persists any discovered key into ~/.astroai/lab/.env for agent CLIs.
-if command -v astroai >/dev/null 2>&1; then
-    astroai --yes agent setup marimo 2>/dev/null || true
+if command -v canfar-lab >/dev/null 2>&1; then
+    canfar-lab --yes agent setup marimo 2>/dev/null || true
 fi
 
 # Prefer opening the starter notebook for a guided first screen. If the user

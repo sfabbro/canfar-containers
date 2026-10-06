@@ -8,17 +8,17 @@ This file ships inside images as `/opt/astroai/USAGE.md`.
 | You want… | Read |
 |-----------|------|
 | This page | First session, storage, Ray, troubleshooting |
-| `astroai` command detail | [astroai USAGE](https://github.com/astroai/canfar-lab/blob/main/docs/USAGE.md) · `astroai help` |
+| `astroai` command detail | [astroai USAGE](https://github.com/astroai/canfar-lab/blob/main/docs/USAGE.md) · `canfar-lab help` |
 | Ray operators | [RAY.md](RAY.md) |
 | Platform CLI | [opencadc.github.io/canfar](https://opencadc.github.io/canfar/) |
 
 ## Scientist card
 
 1. Portal → launch **studio** (coding portal) or **openresearch** (autoresearch) as home base (or terminal/vscode/notebook/marimo/ray-manager as needed).
-2. Inside: `astroai` · `astroai help` · `less /opt/astroai/USAGE.md`
+2. Inside: `astroai` · `canfar-lab help` · `less /opt/astroai/USAGE.md`
 3. Work under `$SRCDIR` (same as `$WORK`; `/scratch/src` on CANFAR so container OOM does not wipe it) and `/scratch` (data/caches).
-4. Persist to `/arc/home` or `/arc/projects` before the session ends (`astroai save` / `git push`).
-5. Env snapshots live in `~/.astroai/lab/saves/` on `/arc/home` — resume them in the next session with `astroai resume NAME`.
+4. Persist to `/arc/home` or `/arc/projects` before the session ends (`canfar-lab save` / `git push`).
+5. Env snapshots live in `~/.astroai/lab/saves/` on `/arc/home` — resume them in the next session with `canfar-lab resume NAME`.
 
 ### Home base: AstroAI Studio (coding portal)
 
@@ -27,8 +27,8 @@ This file ships inside images as `/opt/astroai/USAGE.md`.
 3. Top-right chips (same as openresearch):
    - **Terminal** → `/astroai-terminal/` (ghostty-web + tmux; **← Studio** returns)
    - **AstroAI** → `/astroai-agents/` — Install/Setup agents, **Start batch compute**
-4. Skills: `npx skills add astroai/canfar-skills`. Team review: pick **AstroAI Studio Team** preset (or `astroai panel run` headless).
-5. Laptop: `astroai studio` (same stack, no Skaha proxy).
+4. Skills: `npx skills add astroai/canfar-skills`. Team review: pick **AstroAI Studio Team** preset (or `canfar-lab panel run` headless).
+5. Laptop: `canfar-lab studio` (same stack, no Skaha proxy).
 
 ```bash
 canfar create --name studio contributed images.canfar.net/astroai/studio:26.10
@@ -44,11 +44,11 @@ canfar create --name studio contributed images.canfar.net/astroai/studio:26.10
    `/astroai-terminal/` — ghostty-web + tmux. **← OpenResearch** returns to orx.
 4. In the hub (one screen):
    - **Start batch compute** — autoscaling ray-manager, wires OpenResearch (when on openresearch)
-   - Agent table — same columns as `astroai agent list` (Agent, Bin, Cfg, Where, Ver). **Install** puts the CLI on `$SCRATCH/.local/bin`; **Setup** writes that agent's config, skills dirs, and default MCP/rules/tools on `/arc/home`. Skill packs: `npx skills add astroai/canfar-skills`
+   - Agent table — same columns as `canfar-lab agent list` (Agent, Bin, Cfg, Where, Ver). **Install** puts the CLI on `$SCRATCH/.local/bin`; **Setup** writes that agent's config, skills dirs, and default MCP/rules/tools on `/arc/home`. Skill packs: `npx skills add astroai/canfar-skills`
    - Status shows CANFAR auth, manager Running/Pending, wire state, Jobs URL
    - **← Back** returns to the main UI
 5. Run experiments in OpenResearch — default compute is already CANFAR batch. Put shared I/O on `/arc` (`/scratch` is per-pod only).
-6. Power users: `astroai agent …` in the Terminal chip; cluster ops on ray-manager.
+6. Power users: `canfar-lab agent …` in the Terminal chip; cluster ops on ray-manager.
 
 ```bash
 canfar login   # once, from terminal — persists under /arc/home
@@ -70,10 +70,10 @@ canfar open <session-id>
 
 `/scratch` is fast and private to **this** session. Use `/arc/projects/…` (or home) when another session needs the same files live; move with `canfar data` (platform archive I/O).
 
-**Home quota %:** CANFAR homes use CephFS directory quotas (`ceph.quota.max_bytes`). `astroai status` prefers those xattrs; `ceph.dir.rbytes` can lag a few seconds after large writes — that is Ceph MDS accounting, not a frozen UI cache. Refresh with `astroai status`.
+**Home quota %:** CANFAR homes use CephFS directory quotas (`ceph.quota.max_bytes`). `canfar-lab status` prefers those xattrs; `ceph.dir.rbytes` can lag a few seconds after large writes — that is Ceph MDS accounting, not a frozen UI cache. Refresh with `canfar-lab status`.
 
 ```bash
-astroai status
+canfar-lab status
 canfar data stage /arc/projects/mygroup/raw
 canfar data sync /scratch/out /arc/projects/mygroup/out
 ```
@@ -86,15 +86,15 @@ canfar data sync /scratch/out /arc/projects/mygroup/out
 That launches an autoscaling **ray-manager** and wires OpenResearch. Jobs with
 `--cpus` add workers.
 
-Manual path: `astroai cluster start`, or launch
+Manual path: `canfar-lab cluster start`, or launch
 **ray-manager** from the portal and open Connect URL.
 
 ```bash
 # AstroAI hub → Start batch compute
 # or:
 canfar create --name astroai-compute --cpu 2 --memory 8 contributed images.canfar.net/astroai/ray-manager:26.09
-# or: astroai cluster start
-astroai run train.py --cpus 2 --memory 8GiB
+# or: canfar-lab cluster start
+canfar-lab run train.py --cpus 2 --memory 8GiB
 ```
 
 Dashboard: `connectURL/dashboard/`. Full detail: [RAY.md](RAY.md). Prefer manager memory **≥8 GiB**.
@@ -116,14 +116,14 @@ Put env saves on `/arc` (`~/.astroai/lab/saves/` or `/arc/projects/<group>/env-s
 ## Everyday `astroai`
 
 ```bash
-astroai init mylab          # or clone owner/repo
-astroai save mylab
-astroai resume mylab --yes
-astroai cluster start
-astroai run train.py --cpus 2
-astroai agent setup         # once (UI sessions auto-run in background; terminal opt-in)
-astroai agent install claude
-astroai kernel ensure       # notebook
+canfar-lab init mylab          # or clone owner/repo
+canfar-lab save mylab
+canfar-lab resume mylab --yes
+canfar-lab cluster start
+canfar-lab run train.py --cpus 2
+canfar-lab agent setup         # once (UI sessions auto-run in background; terminal opt-in)
+canfar-lab agent install claude
+canfar-lab kernel ensure       # notebook
 ```
 
 Compilers and editors are in interactive images; put CUDA/ML stacks in your pixi/uv project locks.
@@ -146,7 +146,7 @@ Compilers and editors are in interactive images; put CUDA/ML stacks in your pixi
 | `improc-terminal` | Same tools + browser terminal (ghostty-web/tmux) |
 | `improc-notebook` | Same tools + JupyterLab (default kernel = science venv) |
 
-CADC clients (`cadcget`, `vls`, …) are on PATH from `/opt/astroai/venv/cadc`.
+CADC clients (`cadcget`, `vls`, …) are on PATH from `/opt/canfar`.
 
 ---
 
@@ -192,14 +192,14 @@ synthetic galaxy field, render it, extract sources) is in
 ## Diagnostics / troubleshooting
 
 ```bash
-astroai status --json
+canfar-lab status --json
 ```
 
 | Symptom | Action |
 |---------|--------|
 | Other session missing `/scratch` files | Expected — scratch is session-private; use `/arc/projects` or `canfar data` |
-| Lost files after session end | Persist to `/arc` next time (`astroai save` / `git push` / `canfar data`) |
-| Home quota full | `astroai status` (quota %) — prune caches under `/scratch` manually |
+| Lost files after session end | Persist to `/arc` next time (`canfar-lab save` / `git push` / `canfar data`) |
+| Home quota full | `canfar-lab status` (quota %) — prune caches under `/scratch` manually |
 | Session stuck **Pending** | `canfar ps` / events; contributed quota ≈3; headless Pending is often a Skaha flake ([OPERATORS](OPERATORS.md#platform-notes-headless-pending)) |
 | Session **Failed** / UI never opens | `canfar logs <id>` — grep `[astroai-boot]`; also `~/.astroai/lab/boot.log` on home |
 

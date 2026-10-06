@@ -14,7 +14,7 @@ flowchart TB
   Pref --> W2[ray-worker]
   Mgr --> Dash["/dashboard/ → Ray Dashboard :8265"]
   Mgr --> Jobs["CANFAR_RAY_JOBS_ADDRESS → Jobs API"]
-  Jobs --> Run["astroai run"]
+  Jobs --> Run["canfar-lab run"]
 ```
 
 ## Prefer
@@ -22,8 +22,8 @@ flowchart TB
 | Path | Why |
 |------|-----|
 | AstroAI hub → **Start batch compute** | Autoscaling manager + OpenResearch wire |
-| **`astroai cluster start`** | Same from a terminal (always autoscaling) |
-| **`astroai run train.py`** | Runs a program on that cluster and waits |
+| **`canfar-lab cluster start`** | Same from a terminal (always autoscaling) |
+| **`canfar-lab run train.py`** | Runs a program on that cluster and waits |
 | Ray Dashboard at `connectURL/dashboard/` | Watch jobs, nodes, logs. Not the submit command. |
 | Manager control panel at `/` | Auth, network check, fallback create/stop |
 | One `ray-worker` image | Request `gpus=N` per worker; CPU and GPU share the image |
@@ -43,7 +43,7 @@ every node. Persist cluster state under `/arc/home/<user>/` or
 | `ray-base` | Build-only | — | Minimal apt + `astroai` + Ray |
 
 Workers join with the image Ray venv. Env snapshots stay on `/arc`
-(`astroai save` / `resume` in an interactive session). `/scratch` is
+(`canfar-lab save` / `resume` in an interactive session). `/scratch` is
 **per-pod** — not shared with the manager or other sessions; put shared data
 on `/arc`.
 
@@ -152,8 +152,8 @@ Usual path: autoscaling. One click or one command, then a job with `--cpus`.
 ```bash
 # AstroAI hub → Start batch compute
 # or:
-astroai cluster start
-astroai run train.py --cpus 2   # discovers the Running manager automatically
+canfar-lab cluster start
+canfar-lab run train.py --cpus 2   # discovers the Running manager automatically
 ```
 
 `cluster start` writes `~/.config/canfar/lab/ray-manager.env` and creates the
@@ -184,7 +184,7 @@ sequenceDiagram
 
 1. **Run network preflight**
 2. **Create cluster** — worker count, CPU/RAM, GPUs per worker, `min_joined`, partial-start policy
-3. **Use Ray** — Dashboard, `ray.init(address="auto")`, or `astroai run train.py --cpus 2 --memory 8GiB`
+3. **Use Ray** — Dashboard, `ray.init(address="auto")`, or `canfar-lab run train.py --cpus 2 --memory 8GiB`
 4. **Stop cluster** — destroys worker sessions
 
 Partial-start policies: `accept_partial`, `fail_and_cleanup`, `continue_waiting`.
@@ -206,7 +206,7 @@ CPUs. The manager head starts with
 Turn it on with the hub button or:
 
 ```bash
-astroai cluster start
+canfar-lab cluster start
 ```
 
 That writes `~/.config/canfar/lab/ray-manager.env` (Skaha rejects `-e` on
@@ -249,5 +249,5 @@ examples/ray/                Container smokes
 
 - [USAGE.md](USAGE.md) — general sessions
 - [OPERATORS.md](OPERATORS.md) — publish and platform notes
-- [astroai-lab](https://github.com/astroai/canfar-lab) — `astroai cluster start` + `run` (not `ray job submit`)
+- [astroai-lab](https://github.com/astroai/canfar-lab) — `canfar-lab cluster start` + `run` (not `ray job submit`)
 - Starter notebook in-image: `/opt/astroai/notebooks/ray_train.ipynb`

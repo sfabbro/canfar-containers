@@ -5,7 +5,7 @@
 # over public port 5000 via studio-canfar-proxy.py.
 
 export ASTROAI_SESSION_KIND="${ASTROAI_SESSION_KIND:-studio}"
-export PATH="/opt/astroai/venv/cadc/bin:/opt/openvscode-server/bin:/opt/astroai/bin:${PATH}"
+export PATH="/opt/canfar/bin:/opt/openvscode-server/bin:/opt/astroai/bin:${PATH}"
 
 DSH_PORT="${DSH_PORT:-3080}"
 export DSH_PORT
@@ -75,10 +75,8 @@ trap cleanup EXIT INT TERM
 # Resolve canfar-lab CLI (never legacy astroai)
 _LAB_BIN="canfar-lab"
 if ! command -v "${_LAB_BIN}" >/dev/null 2>&1; then
-    if [[ -x /opt/astroai/venv/cadc/bin/canfar-lab ]]; then
-        _LAB_BIN="/opt/astroai/venv/cadc/bin/canfar-lab"
-    elif [[ -x /opt/astroai/venv/cadc/bin/astroai ]]; then
-        _LAB_BIN="/opt/astroai/venv/cadc/bin/astroai"
+    if [[ -x /opt/canfar/bin/canfar-lab ]]; then
+        _LAB_BIN="/opt/canfar/bin/canfar-lab"
     fi
 fi
 
@@ -190,10 +188,10 @@ _start_dsh() {
     _token_logged=""
     astroai_boot_log "starting dsh --profile astroai on :${DSH_PORT}"
     if command -v stdbuf >/dev/null 2>&1; then
-        env "${_DSH_UNSET_ENV[@]}" stdbuf -oL -eL dsh --profile astroai --no-open \
+        env "${_DSH_UNSET_ENV[@]}" stdbuf -oL -eL dsh --profile canfar-lab --no-open \
             --port "${DSH_PORT}" "${_DSH_TRUST[@]}" >>"${_dsh_log}" 2>&1 &
     else
-        env "${_DSH_UNSET_ENV[@]}" dsh --profile astroai --no-open --port "${DSH_PORT}" \
+        env "${_DSH_UNSET_ENV[@]}" dsh --profile canfar-lab --no-open --port "${DSH_PORT}" \
             "${_DSH_TRUST[@]}" >>"${_dsh_log}" 2>&1 &
     fi
     DSH_PID=$!

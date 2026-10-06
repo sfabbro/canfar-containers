@@ -1,4 +1,4 @@
-# Platform CADC/CANFAR Python clients (/opt/astroai/venv/cadc).
+# Platform CADC/CANFAR Python clients (/opt/canfar).
 # Unpinned — uv resolves at image build; upgrade in-session via upgrade-cadc-tools.sh.
 cadcdata
 cadctap

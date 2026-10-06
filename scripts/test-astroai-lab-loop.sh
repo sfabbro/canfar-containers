@@ -34,7 +34,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-echo "astroai save/resume loop (in ${IMAGE})"
+echo "canfar-lab save/resume loop (in ${IMAGE})"
 [[ "${SMOKE}" -eq 1 ]] && echo "(smoke mode — status only, no pixi init)"
 echo "========================================"
 
@@ -72,19 +72,19 @@ fi
 cd "${WORK}"
 
 if [[ "'"${SMOKE}"'" -eq 1 ]]; then
-    astroai status --json | head -1
+    canfar-lab status --json | head -1
     echo "SMOKE_OK_${layout}"
 else
     pixi init "loopdemo-${layout}" --no-progress
     cd "loopdemo-${layout}"
-    astroai save "loopdemo-${layout}"
+    canfar-lab save "loopdemo-${layout}"
 
     # Fresh work tree (same HOME — simulates new session, same /arc/home)
     rm -rf "${WORK}/loopdemo-${layout}"
     cd "${WORK}"
-    astroai resume "loopdemo-${layout}"
+    canfar-lab resume "loopdemo-${layout}"
     test -f "loopdemo-${layout}/pixi.toml"
-    astroai status --json | head -1
+    canfar-lab status --json | head -1
     echo "LOOP_OK_${layout}"
 fi
 '

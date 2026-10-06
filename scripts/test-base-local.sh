@@ -128,10 +128,10 @@ run "micromamba --version" micromamba --version
 run "mamba --version" mamba --version
 
 # AstroAI / CADC (help/version only — no network auth)
-run "astroai --help" astroai --help
-run "astroai cluster --help" astroai cluster --help
-run "astroai status --json" bash -c "astroai status --json >/dev/null"
-run "astroai env export --json" bash -c "astroai env export --json --no-ensure | grep -q WORK"
+run "canfar-lab --help" canfar-lab --help
+run "canfar-lab cluster --help" canfar-lab cluster --help
+run "canfar-lab status --json" bash -c "canfar-lab status --json >/dev/null"
+run "canfar-lab env export --json" bash -c "canfar-lab env export --json --no-ensure | grep -q WORK"
 run "canfar --help" canfar --help
 run "cadcget --help" cadcget --help
 run "cadcput --help" cadcput --help

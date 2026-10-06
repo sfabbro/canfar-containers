@@ -77,7 +77,7 @@ def _(mo):
 
     # Apply scratch-backed caches even if the session missed profile hooks.
     try:
-        out = subprocess.check_output(["astroai", "env", "export"], text=True)
+        out = subprocess.check_output(["canfar-lab", "env", "export"], text=True)
         for line in out.splitlines():
             if line.startswith("export ") and "=" in line:
                 body = line[len("export ") :]
@@ -96,13 +96,13 @@ def _(mo):
         f"- **home** (keep tiny): `{pathlib.Path.home()}`",
         f"- **XDG_CACHE_HOME**: `{os.environ.get('XDG_CACHE_HOME', '(unset)')}`",
         f"- **OpenRouter key**: "
-        f"{'set (`OPENROUTER_API_KEY` / `~/.astroai/lab/.env`)' if os.environ.get('OPENROUTER_API_KEY') or (pathlib.Path.home() / '.astroai' / 'lab' / '.env').is_file() else 'missing — once: `export OPENROUTER_API_KEY=…` then `canfar agent setup marimo`'}",
+        f"{'set (`OPENROUTER_API_KEY` / `~/.astroai/lab/.env`)' if os.environ.get('OPENROUTER_API_KEY') or (pathlib.Path.home() / '.astroai' / 'lab' / '.env').is_file() else 'missing — once: `export OPENROUTER_API_KEY=…` then `canfar-lab agent setup marimo`'}",
     ]
 
     # Banner JSON shows session paths and save count.
     try:
         proc = subprocess.run(
-            ["astroai", "--json"],
+            ["canfar-lab", "--json"],
             check=False,
             capture_output=True,
             text=True,
@@ -113,9 +113,9 @@ def _(mo):
             lines.append(f"- **saves**: {banner.get('saves_count', '?')}")
         else:
             err = (proc.stderr or "").strip() or f"exit {proc.returncode}"
-            lines.append(f"- **astroai**: no output (`{err}`)")
+            lines.append(f"- **canfar-lab**: no output (`{err}`)")
     except Exception as exc:  # noqa: BLE001
-        lines.append(f"- **astroai**: skipped (`{exc}`)")
+        lines.append(f"- **canfar-lab**: skipped (`{exc}`)")
 
     # Surface existing projects under the session work root.
     markers = ("pyproject.toml", "pixi.toml", "environment.yml", ".git")
@@ -338,7 +338,7 @@ def _(mo, vc, vos_dest, vos_fetch_btn, vos_list_btn, vos_uri):
 def _(mo):
     mo.md(
         r"""
-### astroai (terminal)
+### canfar-lab (terminal)
 
 Read-only checks run in **Session status** above. Mutating work stays in the
 **built-in terminal** (Ctrl + backtick):

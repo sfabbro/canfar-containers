@@ -68,7 +68,7 @@ mkdir -p "${_src_root}"
 cd "${_src_root}"
 astroai_boot_log "common-init:work=${PWD}"
 
-# Track session start time for astroai status; reset per-session auto-archive markers
+# Track session start time for canfar-lab status; reset per-session auto-archive markers
 _state="${CANFAR_LAB_CONFIG_DIR:-${HOME}/.astroai/lab}"
 mkdir -p "${_state}"
 date -u +%s > "${_state}/session-started"
@@ -81,15 +81,15 @@ if [[ ! -f "${_state}/welcomed" ]]; then
 
   Welcome to AstroAI on CANFAR!
   ─────────────────────────────
-  astroai init <name>     New project       astroai cluster start
-  astroai clone <repo>    Clone from GitHub  astroai run train.py --cpus 2
-  astroai help            Command list       less /opt/astroai/USAGE.md
+  canfar-lab init <name>     New project       canfar-lab cluster start
+  canfar-lab clone <repo>    Clone from GitHub  canfar-lab run train.py --cpus 2
+  canfar-lab help            Command list       less /opt/astroai/USAGE.md
 
   Storage: $SRCDIR (code)  $SCRATCH (data/caches)  /arc (shared across sessions)
-  Persist: astroai save / git push  (session disks die with the session; $SRCDIR survives container OOM)
-  Agents:  astroai agent setup              # configs + MCP/rules (first time)
+  Persist: canfar-lab save / git push  (session disks die with the session; $SRCDIR survives container OOM)
+  Agents:  canfar-lab agent setup              # configs + MCP/rules (first time)
            npx skills add astroai/canfar-skills   # skill packs (skills.sh)
-           astroai agent install codex      # public release — no GitHub login
+           canfar-lab agent install codex      # public release — no GitHub login
 WELCOME
         if [[ "${ASTROAI_SESSION_KIND:-}" == "terminal" ]]; then
             printf '\n\033[1;36m%s\033[0m\n' "  Tmux: Ctrl-b c (new tab)  Ctrl-b n/p (switch)  Ctrl-b z (zoom)"
@@ -101,13 +101,13 @@ fi
 # children (bash -l in terminal tmux) re-source profile after /etc/profile.
 
 # Notebook-safe caches even when platform overrides Jupyter CMD.
-if command -v astroai >/dev/null 2>&1; then
+if command -v canfar-lab >/dev/null 2>&1; then
   astroai_boot_log "common-init:env export"
-  eval "$(astroai env export 2>/dev/null)" || true
+  eval "$(canfar-lab env export 2>/dev/null)" || true
   astroai_boot_log "common-init:env export done"
   if [[ "${ASTROAI_SESSION_KIND:-}" == "notebook" || "${ASTROAI_LAB_ENSURE_KERNEL:-}" == "1" ]]; then
     # Scratch-safe default kernel — notebook sessions only (slow pip install).
-    astroai kernel ensure --name astroai >/dev/null 2>&1 || true
+    canfar-lab kernel ensure --name astroai >/dev/null 2>&1 || true
   fi
   # Agent configs (MCP, rules, tools). Skills via npx skills — not AstroAI.
   # UI sessions default to background setup;
@@ -127,15 +127,15 @@ if command -v astroai >/dev/null 2>&1; then
   _agent_log="${_agent_state}/agent-setup.log"
   # Scratch is per-session. Restore durable ~/.dsh before Studio/dsh boot, but
   # do not block Connect on multi-hundred-MB force-relocates (those run async).
-  if command -v astroai >/dev/null 2>&1; then
+  if command -v canfar-lab >/dev/null 2>&1; then
     mkdir -p "${_agent_state}"
     {
       echo "---- $(date -u +%Y-%m-%dT%H:%M:%SZ) agent layout --boot ----"
-      astroai --yes agent layout --boot
+      canfar-lab --yes agent layout --boot
     } >>"${_agent_state}/agent-runtime.log" 2>&1 || true
     (
       echo "---- $(date -u +%Y-%m-%dT%H:%M:%SZ) agent layout (full, bg) ----"
-      astroai --yes agent layout
+      canfar-lab --yes agent layout
       echo "---- $(date -u +%Y-%m-%dT%H:%M:%SZ) agent layout end ----"
     ) >>"${_agent_state}/agent-runtime.log" 2>&1 &
   fi
@@ -149,7 +149,7 @@ if command -v astroai >/dev/null 2>&1; then
     local _rc=0
     {
       echo "---- $(date -u +%Y-%m-%dT%H:%M:%SZ) agent setup start kind=${ASTROAI_SESSION_KIND:-} ----"
-      astroai --yes agent setup
+      canfar-lab --yes agent setup
       _rc=$?
       echo "---- $(date -u +%Y-%m-%dT%H:%M:%SZ) agent setup end exit=${_rc} ----"
     } >>"${_agent_log}" 2>&1 || _rc=$?
