@@ -16,7 +16,7 @@ Operating guidance for coding agents and maintainers working in `astroai/canfar-
 - **Ray Stack (`ray/`):**
   - FastAPI-based Ray cluster manager app (`ray/manager/`) and worker lifecycle helpers (`ray/worker/`).
 - **In-Session Integrations:**
-  - `astroai` CLI and lab utilities installed via lockfiles (`config/astroai-lab.lock`).
+  - `astroai` CLI and lab utilities: `config/astroai-lab.lock` pins the environment, then the image reinstalls `canfar-lab` from git `main`.
   - Writable CADC environment (`/opt/canfar`).
 
 ## Verification Commands and Tiers

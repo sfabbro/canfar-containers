@@ -16,18 +16,6 @@ variable "PYTHON_VERSION" {
   default = "3.13"
 }
 
-variable "DSH_VERSION" {
-  default = "0.2.1-alpha.1"
-}
-
-variable "DSH_CACHEBUST" {
-  default = "1"
-}
-
-variable "OPENSCIENCE_VERSION" {
-  default = "2.0.143"
-}
-
 group "default" {
   targets = ["base", "terminal", "notebook", "vscode", "marimo", "openresearch", "openscience", "studio"]
 }
@@ -109,19 +97,12 @@ target "openscience" {
   inherits   = ["_interface"]
   dockerfile = "dockerfiles/openscience/Dockerfile"
   tags       = ["${REGISTRY}/${OWNER}/openscience:${TAG}"]
-  args = {
-    OPENSCIENCE_VERSION = "${OPENSCIENCE_VERSION}"
-  }
 }
 
 target "studio" {
   inherits   = ["_interface"]
   dockerfile = "dockerfiles/studio/Dockerfile"
   tags       = ["${REGISTRY}/${OWNER}/studio:${TAG}"]
-  args = {
-    DSH_VERSION   = "${DSH_VERSION}"
-    DSH_CACHEBUST = "${DSH_CACHEBUST}"
-  }
 }
 
 # Ray cluster images
