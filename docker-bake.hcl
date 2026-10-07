@@ -36,6 +36,11 @@ group "improc" {
   targets = ["improc", "improc-terminal", "improc-notebook"]
 }
 
+# Group spectroscopy stack. Not part of the public astroai catalog.
+group "specproc" {
+  targets = ["specproc", "specproc-terminal", "specproc-notebook"]
+}
+
 # Untagged bake parent. Never a Harbor image.
 target "python" {
   context    = "./dockerfiles/python"
@@ -189,6 +194,51 @@ target "improc-terminal" {
     REGISTRY  = "${REGISTRY}"
     OWNER     = "${OWNER}"
     BASE_NAME = "improc"
+    TAG       = "${TAG}"
+  }
+}
+
+# Headless spectroscopy stack. Group image: do not push to public astroai.
+target "specproc" {
+  context    = "."
+  dockerfile = "dockerfiles/specproc/Dockerfile"
+  contexts = {
+    "${REGISTRY}/${OWNER}/base:${TAG}" = "target:base"
+  }
+  tags = ["${REGISTRY}/${OWNER}/specproc:${TAG}"]
+  args = {
+    REGISTRY = "${REGISTRY}"
+    OWNER    = "${OWNER}"
+    TAG      = "${TAG}"
+  }
+}
+
+target "specproc-terminal" {
+  context    = "."
+  dockerfile = "dockerfiles/terminal/Dockerfile"
+  contexts = {
+    "${REGISTRY}/${OWNER}/specproc:${TAG}" = "target:specproc"
+  }
+  tags = ["${REGISTRY}/${OWNER}/specproc-terminal:${TAG}"]
+  args = {
+    REGISTRY  = "${REGISTRY}"
+    OWNER     = "${OWNER}"
+    BASE_NAME = "specproc"
+    TAG       = "${TAG}"
+  }
+}
+
+target "specproc-notebook" {
+  context    = "."
+  dockerfile = "dockerfiles/specproc-notebook/Dockerfile"
+  contexts = {
+    "${REGISTRY}/${OWNER}/specproc:${TAG}" = "target:specproc"
+  }
+  tags = ["${REGISTRY}/${OWNER}/specproc-notebook:${TAG}"]
+  args = {
+    REGISTRY  = "${REGISTRY}"
+    OWNER     = "${OWNER}"
+    BASE_NAME = "specproc"
     TAG       = "${TAG}"
   }
 }

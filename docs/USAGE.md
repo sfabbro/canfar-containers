@@ -189,6 +189,71 @@ synthetic galaxy field, render it, extract sources) is in
 
 ---
 
+## Spectroscopy (`specproc`)
+
+Group image, not part of the public `astroai` catalog. A CANFAR account does
+not hide it: the public project allows anonymous pull. Push only to the
+group Harbor project (`OWNER=<group> make push-specproc`). The image includes
+pPXF (no redistribution) and MOOG (no redistribution grant).
+
+| Image | Use |
+|-------|-----|
+| `specproc` | Headless batch |
+| `specproc-terminal` | Interactive CLI (Contributed, :5000) |
+| `specproc-notebook` | JupyterLab (Notebook, :8888); kernel **Python 3 (specproc)** |
+
+Input is a reduced 1D spectrum. No instrument pipelines.
+
+| Area | Tools |
+|------|--------|
+| Stellar atmospheres | Julia `Korg` (+ `Korg.Fit`), Turbospectrum NLTE (`babsma_lu`, `bsyn_lu`), TSFitPy, `synspec` / `synple`, `moogpy`, `pymoog`, pyKurucz (`/opt/astroai/pykurucz`), iNNterpol (`/opt/astroai/iNNterpol`) |
+| Population / SED | FSPS (`SPS_HOME=/opt/astroai/fsps`), `astro-prospector`, `astro-sedpy`, `astroARIADNE` |
+| Fitting | `pysme-astro`, pPXF, FERRE (`ferre`), `pyrre` |
+| Spectrum Python | `specutils`, `specreduce`, `pyspeckit`, `spectres`, `lmfit` |
+| Nidever | `thedoppler`, `annieslasso` (`thecannon`), `fraunhofer`, `roland`, `pyrre` (CPU torch), `starlyte` |
+| Dynamics / chemical evolution | Agama, VICE |
+
+The 2009 autoMOOG program has no public source. The image installs `pymoog`
+and keeps its files at `/opt/astroai/pymoog-home/.pymoog`. Login shells
+symlink `$HOME/.pymoog` there when the user does not already have one.
+
+Line lists, MARCS atmospheres, NLTE grids, FERRE model grids, and the
+PHOENIX / BT-Settl / Kurucz spectra used by `astroARIADNE` stay on a mount.
+PySME atmosphere and NLTE caches (`~/.sme`) are not pre-downloaded.
+
+pyKurucz ships the kurucz-a1 emulator weights. The GFALL atomic list and the
+~5 GB molecular / `gfpred` set are not in the image. Copy the checkout onto a
+mount, then:
+
+```bash
+git lfs pull --include="lines/gfallvac.latest"
+python scripts/download_data.py
+```
+
+Pass that catalog path to `synthe_py`. iNNterpol reads its weights from the
+working directory: `cd /opt/astroai/iNNterpol` for ATLAS9, or
+`iNNterpol_MARCS` / `iNNterpol_PHOENIX` for the other grids.
+
+`astroARIADNE` needs `ARIADNE_MODELS` pointed at a mounted model directory,
+plus dust maps (`dustmaps`) and the MIST bolometric-correction grid
+(`isochrones`) downloaded once onto that mount. The package helper
+`fetch_spectra_cache` writes into the image venv, which session users cannot
+update.
+
+Agama is compiled into the image (actions, Schwarzschild models, self-consistent
+galaxies). Its sources are BSD/MIT; the GSL-linked library is GPL. VICE is the
+chemical-evolution integrator. galpy and gala are ordinary wheels and are not
+baked in.
+
+```bash
+export SPS_HOME=/opt/astroai/fsps
+export JULIA_PROJECT=/opt/astroai/julia/korg
+export TURBOSPECTRUM_ROOT=/opt/astroai/Turbospectrum_NLTE
+export TSFITPY_ROOT=/opt/astroai/TSFitPy
+```
+
+---
+
 ## Diagnostics / troubleshooting
 
 ```bash

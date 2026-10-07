@@ -50,6 +50,18 @@ Register **`improc-terminal`** (Contributed) and **`improc-notebook`** (Notebook
 leave **`improc`** headless for batch. Build/push: `make build-improc` /
 `make push-improc`.
 
+**`specproc` is not an `astroai` catalog image.** It vendors pPXF and MOOG,
+which are not licensed for public redistribution. Build locally with
+`make build-specproc`. Publish only into the group Harbor project:
+
+```bash
+OWNER=<group> make push-specproc TAG=<tag> BUILD_TAG=<tag>
+```
+
+Register that project's `specproc-terminal` (Contributed, 5000) and
+`specproc-notebook` (Notebook, 8888). Leave `specproc` headless. Do not add
+these names to the public `astroai` project or to `scripts/harbor-cleanup.sh`.
+
 Users authenticate once with `canfar login` (credentials under `/arc/home`,
 `~/.canfar/config.yaml`). Ray manager sessions reuse that home volume.
 
