@@ -22,7 +22,18 @@ check_image() {
           command -v \"\$c\" >/dev/null || { echo \"MISSING: \$c\"; exit 1; }
         done
         test -s \"\${SPS_HOME}/data/emlines_info.dat\"
-        julia --project=\"\${JULIA_PROJECT}\" -e 'using Korg'
+        test -L \"\${SPS_HOME}/SPECTRA\"
+        test -L \"\${SPS_HOME}/ISOCHRONES\"
+        test ! -d /opt/astroai/julia/depot/compiled
+        grep -q Korg \"\${JULIA_PROJECT}/Project.toml\"
+        python3 - <<'PY'
+import pathlib
+sp = next(pathlib.Path('/opt/astroai/venv/specproc/lib').glob('python*/site-packages'))
+a = sp / 'synple' / 'linelists'
+b = sp / 'synspec' / 'linelists'
+assert a.is_symlink() and b.is_symlink(), (a, b)
+assert a.readlink() == b.readlink() == pathlib.Path('/specproc-data/linelists/synspec')
+PY
         HOME=/opt/astroai/pymoog-home /opt/astroai/venv/specproc/bin/python /opt/astroai/specproc-smoke.py
         ${extra}
     " || missing=$((missing + 1))

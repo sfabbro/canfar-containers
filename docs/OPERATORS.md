@@ -61,6 +61,8 @@ OWNER=<group> make push-specproc TAG=<tag> BUILD_TAG=<tag>
 Register that project's `specproc-terminal` (Contributed, 5000) and
 `specproc-notebook` (Notebook, 8888). Leave `specproc` headless. Do not add
 these names to the public `astroai` project or to `scripts/harbor-cleanup.sh`.
+Mount the shared line lists, grids, and filters readonly at `/specproc-data`
+(see [USAGE](USAGE.md#spectroscopy-specproc)). The image does not contain them.
 
 Users authenticate once with `canfar login` (credentials under `/arc/home`,
 `~/.canfar/config.yaml`). Ray manager sessions reuse that home volume.
