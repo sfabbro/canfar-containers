@@ -100,6 +100,9 @@ echo "dsh local boot check against ${IMAGE}"
 # ---- session 1: new user ---------------------------------------------------
 start_session "${WORKDIR}/scratch1"
 wait_lab
+# /arc is CephFS: quotas are xattrs and project access is POSIX ACLs (canfar-session skill).
+docker exec "${NAME}" bash -lc 'command -v getfattr setfattr getfacl setfacl >/dev/null' \
+    || fail "getfattr/setfattr/getfacl/setfacl missing (base apt: acl, attr)"
 # A brand-new session opens on the Lab checklist once, then the Agent tab as usual.
 first="$(req -b "${JAR}" -c "${JAR}" -H 'Sec-Fetch-Dest: document' -o /dev/null -w '%{http_code} %{redirect_url}' "${BASE}/")"
 [[ "${first}" == "302 "*"/session/contrib/${SESSION_ID}/lab/" ]] || fail "new session did not open on the Lab: ${first}"
