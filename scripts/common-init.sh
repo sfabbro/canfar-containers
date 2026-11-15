@@ -31,8 +31,8 @@ astroai_boot_log "common-init:profile.d done"
 
 _cache_dirs=(
     "${CANFAR_LAB_BIN_DIR:-${SCRATCH:+${SCRATCH}/.local/bin}}"
-    "${CANFAR_LAB_SAVE_DIR:-${HOME}/.astroai/lab/saves}"
-    "${CANFAR_LAB_CONFIG_DIR:-${HOME}/.astroai/lab}"
+    "${CANFAR_LAB_SAVE_DIR:-${HOME}/.canfar/lab/saves}"
+    "${CANFAR_LAB_CONFIG_DIR:-${HOME}/.canfar/lab}"
     "${HOME}/.ssh"
     "${XDG_CONFIG_HOME:-${HOME}/.config}"
     ${XDG_CACHE_HOME:+"${XDG_CACHE_HOME}"}
@@ -73,7 +73,7 @@ cd "${_src_root}"
 astroai_boot_log "common-init:work=${PWD}"
 
 # Track session start time for canfar-lab status; reset per-session auto-archive markers
-_state="${CANFAR_LAB_CONFIG_DIR:-${HOME}/.astroai/lab}"
+_state="${CANFAR_LAB_CONFIG_DIR:-${HOME}/.canfar/lab}"
 mkdir -p "${_state}"
 date -u +%s > "${_state}/session-started"
 rm -f "${_state}/auto-archived" "${_state}"/auto-archived-*
@@ -127,7 +127,7 @@ if command -v canfar-lab >/dev/null 2>&1; then
       *) _agent_setup=0 ;;
     esac
   fi
-  _agent_state="${HOME}/.astroai/lab"
+  _agent_state="${HOME}/.canfar/lab"
   _agent_log="${_agent_state}/agent-setup.log"
   # Scratch is per-session. Restore durable ~/.dsh before Studio/dsh boot, but
   # do not block Connect on multi-hundred-MB force-relocates (those run async).

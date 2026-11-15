@@ -119,7 +119,7 @@ def jobs_url_from_connect(connect_url: str) -> str:
 
 
 def read_persisted_connect_url() -> str | None:
-    clusters = Path.home() / ".astroai" / "ray" / "clusters"
+    clusters = Path.home() / ".canfar" / "lab" / "ray" / "clusters"
     if not clusters.is_dir():
         return None
     candidates: list[tuple[float, str]] = []

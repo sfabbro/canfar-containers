@@ -28,8 +28,8 @@ fi
 @pytest.fixture
 def env(tmp_path: Path) -> dict[str, str]:
     home = tmp_path / "home"
-    (home / ".astroai" / "lab").mkdir(parents=True)
-    (home / ".astroai" / "lab" / ".env").write_text("ANTHROPIC_API_KEY=sk-test\n")
+    (home / ".canfar" / "lab").mkdir(parents=True)
+    (home / ".canfar" / "lab" / ".env").write_text("ANTHROPIC_API_KEY=sk-test\n")
     fake = tmp_path / "openscience"
     fake.write_text(FAKE)
     fake.chmod(0o755)

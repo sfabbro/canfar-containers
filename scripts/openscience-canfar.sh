@@ -16,10 +16,10 @@ LEASE_NAME=".canfar-lease"
 LEASE_TTL="${ASTROAI_OPENSCIENCE_LEASE_TTL:-180}"
 HEARTBEAT="${ASTROAI_OPENSCIENCE_HEARTBEAT:-60}"
 
-if [[ -r "${HOME}/.astroai/lab/.env" ]]; then
+if [[ -r "${HOME}/.canfar/lab/.env" ]]; then
     set -a
     # shellcheck disable=SC1091
-    source "${HOME}/.astroai/lab/.env"
+    source "${HOME}/.canfar/lab/.env"
     set +a
 fi
 

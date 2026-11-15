@@ -359,7 +359,7 @@ def test_sync_authorized_token_or_loopback() -> None:
 
 
 def test_sync_state_reads_the_mailbox(tmp_path: Path) -> None:
-    box = tmp_path / ".astroai" / "lab" / "sync"
+    box = tmp_path / ".canfar" / "lab" / "sync"
     for kind in ("requests", "events", "processing", "state"):
         (box / kind).mkdir(parents=True)
     (box / "ready.json").write_text(

@@ -23,7 +23,7 @@ out="$(
     echo "FAIL: non-interactive shell printed: ${out}" >&2
     exit 1
 }
-[[ ! -e "${TMP}/quiet/.astroai/lab/whats-new-seen" ]] || {
+[[ ! -e "${TMP}/quiet/.canfar/lab/whats-new-seen" ]] || {
     echo "FAIL: non-interactive shell wrote the stamp" >&2
     exit 1
 }
@@ -73,7 +73,7 @@ if "What's new in this AstroAI image" not in first:
 if "# id:" in first:
     sys.stderr.write("FAIL: id line was shown to the user\n")
     sys.exit(1)
-stamp = f"{home_root}/first/.astroai/lab/whats-new-seen"
+stamp = f"{home_root}/first/.canfar/lab/whats-new-seen"
 with open(stamp, encoding="utf-8") as fh:
     seen = fh.read().strip()
 if seen != os.environ["NEWS_ID"]:
@@ -119,7 +119,7 @@ silenced = b"".join(chunks).decode("utf-8", "replace")
 if "What's new in this AstroAI image" in silenced:
     sys.stderr.write("FAIL: ASTROAI_WHATS_NEW=0 still printed\n")
     sys.exit(1)
-if os.path.exists(f"{home_root}/off/.astroai/lab/whats-new-seen"):
+if os.path.exists(f"{home_root}/off/.canfar/lab/whats-new-seen"):
     sys.stderr.write("FAIL: silenced shell wrote the stamp\n")
     sys.exit(1)
 print("PASS: whats-new once per id")

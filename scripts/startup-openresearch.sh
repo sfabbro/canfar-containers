@@ -23,7 +23,7 @@ python3 /opt/astroai/lib/orx-wire-compute.py >/dev/null 2>&1 || true
 if command -v orx >/dev/null 2>&1; then
     orx --no-telemetry telemetry off >/dev/null 2>&1 || true
     (
-        _state="${HOME}/.astroai/lab"
+        _state="${HOME}/.canfar/lab"
         # Wait until bg setup finished: pending cleared and (stamp|failed) present,
         # or timeout. Then wait out any remaining lock.
         for _ in $(seq 1 180); do

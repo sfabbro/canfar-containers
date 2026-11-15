@@ -29,7 +29,7 @@ All web interfaces in Studio feature an injected, floating Glassmorphism Command
 
 The session runs `canfar-lab sync watch --session --interval 30` (started by
 `startup-studio.sh`, restarted by the supervision loop if it dies). It polls the
-shared mailbox at `~/.astroai/lab/sync` — a doorbell only; GitHub is the
+shared mailbox at `~/.canfar/lab/sync` — a doorbell only; GitHub is the
 protocol — and answers desk requests by bootstrapping missing repos and
 fast-forwarding. Divergent or dirty trees stop with a report; nothing is ever
 stashed.

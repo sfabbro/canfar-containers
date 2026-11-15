@@ -118,7 +118,7 @@ def has_model_key() -> bool:
         return True
     home = Path.home()
     with contextlib.suppress(OSError, UnicodeDecodeError):
-        for line in (home / ".astroai" / "lab" / ".env").read_text(encoding="utf-8").splitlines():
+        for line in (home / ".canfar" / "lab" / ".env").read_text(encoding="utf-8").splitlines():
             name, sep, value = line.strip().removeprefix("export ").partition("=")
             if sep and name.strip() in MODEL_KEYS and value.strip().strip("'\""):
                 return True

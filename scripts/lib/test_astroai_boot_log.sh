@@ -10,7 +10,7 @@ TMP="$(mktemp -d)"
 trap 'rm -rf "${TMP}"' EXIT
 
 export HOME="${TMP}"
-export CANFAR_LAB_CONFIG_DIR="${TMP}/.astroai/lab"
+export CANFAR_LAB_CONFIG_DIR="${TMP}/.canfar/lab"
 export ASTROAI_SESSION_KIND=testkind
 export SKAHA_SESSIONID=sess-test-1
 

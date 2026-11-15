@@ -1,6 +1,6 @@
 # Marimo AI assistant — pre-configured for OpenRouter (same provider as astroai-lab agents).
 #
-# One shared key on /arc/home: ~/.astroai/lab/.env (OPENROUTER_API_KEY).
+# One shared key on /arc/home: ~/.canfar/lab/.env (OPENROUTER_API_KEY).
 # Set once with:  export OPENROUTER_API_KEY=… && astroai agent setup
 # Marimo and agent CLIs all read that file — no re-pasting per tool.
 #

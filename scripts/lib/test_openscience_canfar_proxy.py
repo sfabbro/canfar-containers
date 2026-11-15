@@ -80,7 +80,7 @@ def test_chip_asks_for_a_key_until_openscience_has_a_model(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     assert _chip(tmp_path).endswith(">Add a model key")
-    dotenv = tmp_path / "home" / ".astroai" / "lab" / ".env"
+    dotenv = tmp_path / "home" / ".canfar" / "lab" / ".env"
     dotenv.parent.mkdir(parents=True)
     dotenv.write_text("# saved by the hub\nOPENROUTER_API_KEY=\nADS_API_TOKEN=abc\n")
     assert _chip(tmp_path).endswith(">Add a model key")

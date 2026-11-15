@@ -9,7 +9,7 @@ from pathlib import Path as _Path
 
 def _astroai_load_keys() -> None:
     try:
-        text = (_Path.home() / ".astroai" / "lab" / ".env").read_text(encoding="utf-8")
+        text = (_Path.home() / ".canfar" / "lab" / ".env").read_text(encoding="utf-8")
     except OSError:
         return
     for raw in text.splitlines():

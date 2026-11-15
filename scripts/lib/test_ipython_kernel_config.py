@@ -27,7 +27,7 @@ def _kernel_env(home: Path, **env: str) -> dict[str, str]:
 
 
 def test_new_kernel_sees_keys_saved_after_boot(tmp_path: Path) -> None:
-    keys = tmp_path / ".astroai" / "lab" / ".env"
+    keys = tmp_path / ".canfar" / "lab" / ".env"
     keys.parent.mkdir(parents=True)
     keys.write_text(
         "# comment\nASTRO_NEW=fresh\nASTRO_CHANGED='replaced'\nASTRO_EMPTY=\nnot a line\n",

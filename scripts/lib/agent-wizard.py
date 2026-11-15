@@ -149,7 +149,7 @@ def _load_wire() -> ModuleType:
 
 
 def _log_tail(n: int = 40) -> str:
-    path = HOME / ".astroai" / "lab" / "agent-setup.log"
+    path = HOME / ".canfar" / "lab" / "agent-setup.log"
     if not path.is_file():
         return ""
     try:

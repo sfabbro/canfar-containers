@@ -1,5 +1,5 @@
 # Show /opt/astroai/whats-new.txt once per note id, on an interactive terminal.
-# The stamp lives under ~/.astroai/lab (persistent /arc/home on CANFAR).
+# The stamp lives under ~/.canfar/lab (persistent /arc/home on CANFAR).
 # Non-interactive shells, including session startup, do not print or stamp,
 # so the first real shell still shows the note.
 # Silence with ASTROAI_WHATS_NEW=0.
@@ -21,7 +21,7 @@ astroai_show_whats_new() {
     _id="$(sed -n '1s/^# id:[[:space:]]*//p' "${_file}")"
     [[ -n "${_id}" ]] || return 0
 
-    _state="${CANFAR_LAB_CONFIG_DIR:-${HOME}/.astroai/lab}"
+    _state="${CANFAR_LAB_CONFIG_DIR:-${HOME}/.canfar/lab}"
     _stamp="${_state}/whats-new-seen"
     _seen=""
     if [[ -f "${_stamp}" ]]; then

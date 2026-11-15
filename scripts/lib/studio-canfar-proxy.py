@@ -1089,7 +1089,7 @@ def sync_mailbox_state() -> dict[str, Any]:
     """Read the shared mailbox under ``$HOME`` (doorbell only, never the protocol)."""
     home = Path(os.path.expanduser("~"))
     explicit = os.environ.get("CANFAR_LAB_SYNC_MAILBOX", "").strip()
-    box = Path(explicit) if explicit else home / ".astroai" / "lab" / "sync"
+    box = Path(explicit) if explicit else home / ".canfar" / "lab" / "sync"
     state: dict[str, Any] = {
         "path": str(box),
         "exists": box.is_dir(),
@@ -1330,7 +1330,7 @@ def run_launch_studio(payload: dict[str, Any]) -> dict[str, Any]:
 
 def _cluster_log_path() -> Path:
     state = os.environ.get("ASTROAI_STUDIO_STATE", "").strip().rstrip("/")
-    base = Path(state) if state else Path(os.path.expanduser("~")) / ".astroai" / "lab"
+    base = Path(state) if state else Path(os.path.expanduser("~")) / ".canfar" / "lab"
     return base / "logs" / "desk-cluster.log"
 
 

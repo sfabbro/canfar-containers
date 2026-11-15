@@ -106,10 +106,10 @@ else
     astroai_boot_log "INFO: canfar-lab CLI not pre-installed — proceeding with core services"
 fi
 
-if [[ -r "${HOME}/.astroai/lab/.env" ]]; then
+if [[ -r "${HOME}/.canfar/lab/.env" ]]; then
     set -a
     # shellcheck disable=SC1091
-    source "${HOME}/.astroai/lab/.env"
+    source "${HOME}/.canfar/lab/.env"
     set +a
 fi
 # dsh reads these from ~/.dsh/.credentials.yaml (synced by studio --prepare and
@@ -175,11 +175,11 @@ _start_sync_watch() {
     if [[ -z "${_LAB_BIN:-}" ]] || ! command -v "${_LAB_BIN}" >/dev/null 2>&1; then
         return 0
     fi
-    mkdir -p "${HOME}/.astroai/lab/sync"
+    mkdir -p "${HOME}/.canfar/lab/sync"
     "${_LAB_BIN}" sync watch --session --interval 30 \
         >>"${_studio_state}/logs/sync-watch.log" 2>&1 &
     SYNC_WATCH_PID=$!
-    astroai_boot_log "sync watcher started (pid=${SYNC_WATCH_PID}, mailbox=${HOME}/.astroai/lab/sync)"
+    astroai_boot_log "sync watcher started (pid=${SYNC_WATCH_PID}, mailbox=${HOME}/.canfar/lab/sync)"
 }
 
 _dump_dsh_log() {

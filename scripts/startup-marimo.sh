@@ -7,14 +7,14 @@ export ASTROAI_SESSION_KIND="${ASTROAI_SESSION_KIND:-marimo}"
 source /cadc/common-init.sh
 
 # Shared OpenRouter key (and gh token hook) before marimo starts — same store
-# agents use via ~/.astroai/lab/.env + agent-env.sh.
-if [[ -f "${HOME}/.astroai/lab/agent-env.sh" ]]; then
+# agents use via ~/.canfar/lab/.env + agent-env.sh.
+if [[ -f "${HOME}/.canfar/lab/agent-env.sh" ]]; then
     # shellcheck disable=SC1091
-    source "${HOME}/.astroai/lab/agent-env.sh"
-elif [[ -f "${HOME}/.astroai/lab/.env" ]]; then
+    source "${HOME}/.canfar/lab/agent-env.sh"
+elif [[ -f "${HOME}/.canfar/lab/.env" ]]; then
     set -a
     # shellcheck disable=SC1091
-    source "${HOME}/.astroai/lab/.env"
+    source "${HOME}/.canfar/lab/.env"
     set +a
 fi
 
@@ -39,7 +39,7 @@ cd "${NOTEBOOKS_DIR}"
 
 # Ensure marimo AI config exists with OpenRouter API key (canfar-lab agent setup marimo).
 # Non-destructive: only creates/seeds ~/.marimo.toml on first launch; never overwrites.
-# Also persists any discovered key into ~/.astroai/lab/.env for agent CLIs.
+# Also persists any discovered key into ~/.canfar/lab/.env for agent CLIs.
 if command -v canfar-lab >/dev/null 2>&1; then
     canfar-lab --yes agent setup marimo 2>/dev/null || true
 fi

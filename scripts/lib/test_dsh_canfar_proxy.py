@@ -163,12 +163,19 @@ def test_tab_table_and_matching() -> None:
     assert proxy.match_tab("/lab")["id"] == "lab"
     assert proxy.match_tab("/laboratory")["id"] == "agent"
     assert proxy.match_tab("/api/x")["id"] == "agent"
+    labels = {t["id"]: (t["label"], t["icon"]) for t in proxy.TABS}
+    assert labels["agent"] == ("Harness", "") and labels["lab"] == ("Settings", "gear")
 
 
 def test_bad_tab_file_falls_back(tmp: Path | None = None) -> None:
     bad = Path(tempfile.mkdtemp()) / "t.json"
     bad.write_text('{"tabs": [{"prefix": "no-slash", "port": 1}]}')
-    assert [t["id"] for t in proxy.load_tabs(str(bad))] == ["agent", "lab"]
+    fallback = proxy.load_tabs(str(bad))
+    assert [t["id"] for t in fallback] == ["agent", "lab"]
+    assert [t["label"] for t in fallback] == ["Harness", "Settings"]
+    unknown = Path(tempfile.mkdtemp()) / "t.json"
+    unknown.write_text('{"tabs": [{"id": "agent", "prefix": "/", "port": 1, "icon": "<svg>"}]}')
+    assert proxy.load_tabs(str(unknown))[0]["icon"] == ""  # only known icons
 
 
 def test_doubled_session_prefix_collapses() -> None:
@@ -421,12 +428,32 @@ def test_tabs_js_served() -> None:
     assert resp.status == 200 and b"attachShadow" in data
 
 
+def test_tab_strip_config_has_icon_and_logo() -> None:
+    logo = Path(tempfile.mkdtemp()) / "logo.png"
+    logo.write_bytes(b"\x89PNG\r\n\x1a\nfake")
+    saved = proxy.LOGO_FILE
+    proxy.LOGO_FILE = str(logo)
+    try:
+        cfg = json.loads(proxy.tabs_snippet("agent").split(">", 1)[1].split("</script>", 1)[0])
+        assert cfg["logo"].endswith("/__dsh/logo.png")
+        lab = next(t for t in cfg["tabs"] if t["id"] == "lab")
+        assert lab["label"] == "Settings" and lab["icon"].startswith("M19.14")
+        resp, data = _get(f"{P}/__dsh/logo.png")
+        assert resp.status == 200 and resp.getheader("Content-Type") == "image/png"
+        assert data.startswith(b"\x89PNG")
+        proxy.LOGO_FILE = str(logo.with_name("missing.png"))
+        cfg = json.loads(proxy.tabs_snippet("agent").split(">", 1)[1].split("</script>", 1)[0])
+        assert cfg["logo"] == ""  # falls back to the text brand
+    finally:
+        proxy.LOGO_FILE = saved
+
+
 def test_lab_down_says_starting() -> None:
     saved = LAB_TAB["port"]
     LAB_TAB["port"] = _free_port()
     try:
         resp, data = _get(f"{P}/lab/")
-        assert resp.status == 503 and b"Opening Lab" in data
+        assert resp.status == 503 and b"Opening Settings" in data
     finally:
         LAB_TAB["port"] = saved
 

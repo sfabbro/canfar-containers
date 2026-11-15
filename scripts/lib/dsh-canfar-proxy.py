@@ -56,15 +56,20 @@ PREFIX = f"/session/contrib/{SESSION_ID}" if SESSION_ID else ""
 TABS_FILE = os.environ.get("ASTROAI_TABS_FILE", "/opt/astroai/studio/tabs.json")
 COOKIE_PREFIX = "dsh-auth-"
 BRAND_TITLE = os.environ.get("ASTROAI_TAB_TITLE", "AstroAI")
-PROXY_REVISION = "dsh-1"
+#: Square logo shown at the left of the tab strip (no text brand when present).
+LOGO_FILE = os.environ.get("ASTROAI_TAB_LOGO", "/opt/astroai/studio/logo.png")
+PROXY_REVISION = "dsh-2"
 ASSET_ROUTE = "/__dsh/tabs.js"
+LOGO_ROUTE = "/__dsh/logo.png"
 STATUS_ROUTE = "/api/studio/status"
 
 DEFAULT_TABS: list[dict[str, Any]] = [
-    {"id": "agent", "label": "Agent", "prefix": "/", "port": 3080, "port_env": "DSH_PORT"},
+    {"id": "agent", "label": "Harness", "prefix": "/", "port": 3080, "port_env": "DSH_PORT"},
     {
         "id": "lab",
-        "label": "Lab",
+        "label": "Settings",
+        "icon": "gear",
+        "align": "end",
         "prefix": "/lab",
         "port": 4792,
         "port_env": "CANFAR_LAB_WEB_PORT",
@@ -77,6 +82,22 @@ DEFAULT_TABS: list[dict[str, Any]] = [
 # ---------------------------------------------------------------------------
 # Tab table
 # ---------------------------------------------------------------------------
+
+
+#: Icons a tab may show instead of its label text (the label stays as the
+#: accessible name and tooltip). Inline SVG paths, 24x24, currentColor.
+ICONS = {
+    "gear": (
+        "M19.14 12.94c.04-.31.06-.62.06-.94s-.02-.63-.06-.94l2.03-1.58a.5.5 0 0 0 .12-.64"
+        "l-1.92-3.32a.5.5 0 0 0-.61-.22l-2.39.96a7.03 7.03 0 0 0-1.62-.94l-.36-2.54A.5.5 0 0 0"
+        " 13.9 2h-3.84a.5.5 0 0 0-.49.42l-.36 2.54c-.59.24-1.13.56-1.62.94l-2.39-.96a.5.5 0 0 0"
+        "-.61.22L2.67 8.48a.5.5 0 0 0 .12.64l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94"
+        "l-2.03 1.58a.5.5 0 0 0-.12.64l1.92 3.32c.13.22.39.3.61.22l2.39-.96c.5.38 1.03.7 1.62"
+        ".94l.36 2.54c.05.24.25.42.49.42h3.84c.24 0 .44-.18.49-.42l.36-2.54c.59-.24 1.13-.56"
+        " 1.62-.94l2.39.96c.22.08.48 0 .61-.22l1.92-3.32a.5.5 0 0 0-.12-.64l-2.03-1.58Z"
+        "M12 15.6a3.6 3.6 0 1 1 0-7.2 3.6 3.6 0 0 1 0 7.2Z"
+    ),
+}
 
 
 def _clean_tab(raw: Any) -> dict[str, Any] | None:
@@ -101,6 +122,7 @@ def _clean_tab(raw: Any) -> dict[str, Any] | None:
         "start": bool(raw.get("start")),
         "align": "end" if raw.get("align") == "end" else "",
         "patch": str(raw.get("patch") or ""),
+        "icon": raw["icon"] if isinstance(raw.get("icon"), str) and raw["icon"] in ICONS else "",
     }
 
 
@@ -371,6 +393,8 @@ TABS_JS = r"""(function () {
     "background:#0f1222;color:#a6accd;border-bottom:1px solid #262a40;" +
     "overflow-x:auto;scrollbar-width:none}" +
     ".brand{display:flex;align-items:center;padding:0 10px 0 2px;color:#e4e6f5;font-weight:650}" +
+    ".brand img{width:20px;height:20px;border-radius:5px;display:block}" +
+    "a.icon{padding:0 10px}a.icon svg{width:18px;height:18px;fill:currentColor;display:block}" +
     "a{display:flex;align-items:center;gap:6px;padding:0 12px;color:inherit;text-decoration:none;" +
     "border-bottom:2px solid transparent;white-space:nowrap;flex:none}" +
     "@media (max-width:540px){.brand{display:none}a{padding:0 9px}}" +
@@ -389,7 +413,16 @@ TABS_JS = r"""(function () {
   var nav = root.querySelector("nav");
   var brand = document.createElement("span");
   brand.className = "brand";
-  brand.textContent = cfg.brand;
+  if (cfg.logo) {
+    var img = document.createElement("img");
+    img.src = cfg.logo;
+    img.alt = cfg.brand;
+    img.title = cfg.brand;
+    img.onerror = function () { brand.textContent = cfg.brand; };
+    brand.appendChild(img);
+  } else {
+    brand.textContent = cfg.brand;
+  }
   nav.appendChild(brand);
   var badges = {}, spaced = false;
   cfg.tabs.forEach(function (t) {
@@ -401,7 +434,20 @@ TABS_JS = r"""(function () {
     }
     var a = document.createElement("a");
     a.href = t.href;
-    a.textContent = t.label;
+    if (t.icon) {
+      a.className = "icon";
+      a.title = t.label;
+      a.setAttribute("aria-label", t.label);
+      var svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+      svg.setAttribute("viewBox", "0 0 24 24");
+      svg.setAttribute("aria-hidden", "true");
+      var path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+      path.setAttribute("d", t.icon);
+      svg.appendChild(path);
+      a.appendChild(svg);
+    } else {
+      a.textContent = t.label;
+    }
     if (t.id === cfg.active) a.setAttribute("aria-current", "page");
     if (t.badge) {
       var b = document.createElement("span");
@@ -434,7 +480,8 @@ TABS_JS = r"""(function () {
           var n = d && !d.ready ? Number(d.pending) || 0 : 0;
           s.el.textContent = n ? String(n) : "";
           s.el.classList.toggle("on", n > 0);
-          s.a.title = n ? n + " step" + (n === 1 ? "" : "s") + " left to set up this session" : "";
+          s.a.title = n ? s.tab.label + ": " + n + " step" + (n === 1 ? "" : "s") +
+            " left to set up this session" : s.tab.label;
           timer = setTimeout(poll, n ? 5000 : 60000);
         })
         .catch(function () { timer = setTimeout(poll, 15000); });
@@ -451,6 +498,7 @@ TABS_JS = r"""(function () {
 def tabs_snippet(active: str) -> str:
     cfg = {
         "brand": BRAND_TITLE,
+        "logo": f"{PREFIX}{LOGO_ROUTE}" if Path(LOGO_FILE).is_file() else "",
         "height": TAB_HEIGHT,
         "active": active,
         "tabs": [
@@ -460,6 +508,7 @@ def tabs_snippet(active: str) -> str:
                 "href": tab_href(t),
                 "badge": t["badge"],
                 "end": t["align"] == "end",
+                "icon": ICONS.get(t["icon"], ""),
             }
             for t in TABS
         ],
@@ -835,6 +884,20 @@ class DshProxyHandler(BaseHTTPRequestHandler):
 
         if route == STATUS_ROUTE:
             _send(self, 200, json.dumps(studio_status()).encode(), "application/json")
+            return
+        if route == LOGO_ROUTE and self.command in ("GET", "HEAD"):
+            try:
+                body = Path(LOGO_FILE).read_bytes()
+            except OSError:
+                _send(self, 404, b"no logo", "text/plain")
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "image/png")
+            self.send_header("Cache-Control", "max-age=86400")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            if self.command != "HEAD":
+                self.wfile.write(body)
             return
         if route == ASSET_ROUTE and self.command in ("GET", "HEAD"):
             self.send_response(200)

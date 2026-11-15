@@ -116,6 +116,12 @@ grep -q 'data-astroai-api-shim' <<<"${page}" || fail "Agent page has no session-
 lab="$(req -H 'Sec-Fetch-Dest: document' "${BASE}/lab/")"
 grep -q "<base href=\"/session/contrib/${SESSION_ID}/lab/\">" <<<"${lab}" || fail "Lab page has no session <base>"
 grep -q '"active": "lab"' <<<"${lab}" || fail "Lab page tab strip is not on Lab"
+# Tab strip: logo, "Harness", and Settings as a gear icon.
+grep -q '"label": "Harness"' <<<"${lab}" || fail "tab strip has no Harness tab"
+grep -q '"label": "Settings", "href": "[^"]*", "badge": "api/onboarding", "end": true, "icon": "M' <<<"${lab}" \
+    || fail "Settings tab is not a gear icon"
+logo="$(req -o /dev/null -w '%{http_code} %{content_type}' "${BASE}/__dsh/logo.png")"
+[[ "${logo}" == "200 image/png" ]] || fail "tab-strip logo not served (${logo})"
 
 ob="$(onboarding)"
 [[ "$(jget 'd["kind"]' <<<"${ob}")" == "new" ]] || fail "new user not recognised: ${ob}"
@@ -132,6 +138,39 @@ nowrite="$(req -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: applicat
     "${BASE}/lab/api/snapshots")"
 [[ "${nowrite}" == "403" ]] || fail "Lab write without X-Canfar-Lab returned ${nowrite}"
 
+# Code folder: $SCRATCH/src by default, with automatic saves.
+ws="$(req "${BASE}/lab/api/workspace")"
+[[ "$(jget 'd["code_dir"]["mode"], d["ephemeral"], d["code_path"]' <<<"${ws}")" == "scratch True /scratch/src" ]] \
+    || fail "default code folder is not \$SCRATCH/src: ${ws}"
+
+# Switch to ~/src and restart the tools there, then back.
+post() { req -X POST -H 'X-Canfar-Lab: 1' -H 'Content-Type: application/json' -d "$2" "${BASE}/lab/api/$1"; }
+live() { docker exec "${NAME}" cat /scratch/.dsh-testuser/live-code-dir 2>/dev/null; }
+switch_to() {  # $1 = mode, $2 = expected path
+    local r
+    r="$(post workspace/code-dir "{\"mode\": \"$1\"}")"
+    [[ "$(jget 'd["new"]' <<<"${r}")" == "$2" ]] || fail "code folder did not change to $2: ${r}"
+    [[ "$(jget 'd["restart_supported"]' <<<"${r}")" == "True" ]] || fail "restart not offered: ${r}"
+    post workspace/restart '{}' >/dev/null
+    for _ in $(seq 1 30); do [[ "$(live)" == "$2" ]] && break; sleep 1; done
+    [[ "$(live)" == "$2" ]] || fail "tools did not restart in $2 (live: $(live))"
+    for _ in $(seq 1 60); do
+        [[ "$(req -o /dev/null -w '%{http_code}' "${BASE}/")" =~ ^(200|302)$ ]] && return 0
+        sleep 2
+    done
+    fail "Harness did not come back after the restart"
+}
+switch_to home /arc/home/testuser/src
+docker exec "${NAME}" test -d /arc/home/testuser/src || fail "~/src was not created"
+[[ "$(docker exec "${NAME}" stat -c %a /arc/home/testuser/src)" == "700" ]] || fail "new ~/src is not private"
+switch_to scratch /scratch/src
+
+# Agent logins and keys are owner-only.
+docker exec "${NAME}" bash -c 'mkdir -p ~/.codex && chmod 755 ~/.codex'
+post workspace/secure '{}' >/dev/null
+[[ "$(docker exec "${NAME}" stat -c %a /arc/home/testuser/.codex)" == "700" ]] || fail "agent config not made private"
+[[ "$(docker exec "${NAME}" stat -c %a /arc/home/testuser/.canfar/lab)" == "700" ]] || fail "~/.canfar/lab not private"
+
 # Some code, then Save through the proxy.
 docker exec "${NAME}" bash -c 'mkdir -p /scratch/src/demo && cd /scratch/src/demo && echo "print(42)" > main.py'
 st="$(steps)"
@@ -145,10 +184,12 @@ grep -q '^data:' <<<"${events}" || fail "job log did not stream through the prox
 final="$(wait_job "${job_id}")"
 [[ "$(jget 'd["job"]["state"]' <<<"${final}")" == "ok" ]] || fail "save failed: ${final}"
 
-# Skaha stops a session with SIGTERM: it must exit, not restart its services.
+# Skaha stops a session with SIGTERM: it must exit (not restart its services),
+# after one last automatic save of what changed since.
+docker exec "${NAME}" bash -c 'echo "print(43)" > /scratch/src/demo/later.py'
 t0=$SECONDS
 docker stop -t 30 "${NAME}" >/dev/null
-(( SECONDS - t0 < 15 )) || fail "SIGTERM did not end the session (took $((SECONDS - t0))s)"
+(( SECONDS - t0 < 28 )) || fail "SIGTERM did not end the session in time (took $((SECONDS - t0))s)"
 docker rm -f "${NAME}" >/dev/null
 
 # ---- session 2: returning user, empty scratch ------------------------------
@@ -160,9 +201,12 @@ for _ in $(seq 1 60); do
 done
 docker exec "${NAME}" grep -q 'print(42)' /scratch/src/demo/main.py \
     || fail "returning session did not restore the snapshot into \$SCRATCH/src"
+docker exec "${NAME}" grep -q 'print(43)' /scratch/src/demo/later.py \
+    || fail "the shutdown save did not carry the last change to the next session"
 ob="$(onboarding)"
 [[ "$(jget 'd["kind"]' <<<"${ob}")" == "returning" ]] || fail "returning user not recognised: ${ob}"
 code="$(req -b "${JAR}" -H 'Sec-Fetch-Dest: document' -o /dev/null -w '%{http_code}' "${BASE}/")"
-[[ "${code}" == "200" ]] || fail "returning user was not sent straight to the Agent tab (${code})"
+[[ "${code}" == "200" ]] || fail "returning user was not sent straight to the Harness tab (${code})"
 
-echo "OK: dsh Connect, Agent + Lab tabs, Lab auth, save, auto-restore in a new session (${IMAGE})"
+echo "OK: dsh Connect, Harness + Settings tabs, code folder switch + restart, private agent data,"
+echo "    save, shutdown save, auto-restore in a new session (${IMAGE})"

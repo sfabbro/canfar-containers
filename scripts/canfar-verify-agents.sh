@@ -141,10 +141,10 @@ check "agent list --ui" login_shell 'canfar-lab agent list --ui 2>&1 | grep -q E
 # Plugin registry surface: MCP / tool / rule only (skills via npx skills).
 check "agent plugins list --kind mcp" login_shell 'canfar-lab agent plugins list --kind mcp 2>&1 | grep -q ray-manager-mcp'
 check "agent plugins list --kind rule" login_shell 'canfar-lab agent plugins list --kind rule 2>&1 | grep -q token-efficient'
-check "agent setup stamp" login_shell 'test -f "${HOME}/.astroai/lab/agent-setup-stamp"'
+check "agent setup stamp" login_shell 'test -f "${HOME}/.canfar/lab/agent-setup-stamp"'
 check "cursor MCP" login_shell 'python3 -c "import json, pathlib; d=json.loads(pathlib.Path(\"${HOME}/.cursor/mcp.json\").read_text()); assert d.get(\"mcpServers\")"'
 check "kilo starter config" login_shell 'test -f "${HOME}/.config/kilo/kilo.jsonc"'
-check "agent-env hook" login_shell 'test -f "${HOME}/.astroai/lab/agent-env.sh"'
+check "agent-env hook" login_shell 'test -f "${HOME}/.canfar/lab/agent-env.sh"'
 
 check "agent install kilo" login_shell 'canfar-lab agent list 2>&1 | grep -q kilo'
 

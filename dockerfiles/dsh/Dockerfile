@@ -1,10 +1,11 @@
 # syntax=docker/dockerfile:1
 # AstroAI dsh: one coding-agent workbench for CANFAR.
-#   Agent       /          dsh (127.0.0.1:3080)
+#   Harness     /          dsh (127.0.0.1:3080)
 #   Terminal    /terminal/ ghostty-web + tmux (127.0.0.1:4793), always on
 #   JupyterLab  /jupyter/  (127.0.0.1:8888), started the first time its tab is opened
 #   VS Code     /vscode/   OpenVSCode Server (127.0.0.1:8080), same
-#   Lab         /lab/      canfar lab web (127.0.0.1:4792): agents, keys, code, cluster
+#   Settings ⚙  /lab/      canfar lab web (127.0.0.1:4792): agents, keys, code folder,
+#                          automatic saves, privacy, cluster
 # behind dsh-canfar-proxy.py on :5000. Tabs and routes: config/dsh-tabs.json.
 # A simpler successor to dockerfiles/studio; renamed astroai/studio once proven.
 
@@ -115,8 +116,10 @@ ENV DISABLE_AUTOUPDATER=1 \
     AGY_CLI_DISABLE_AUTO_UPDATE=1 \
     PI_SKIP_VERSION_CHECK=1
 
-# 4. canfar-lab with `canfar lab web` (the Lab tab); fails the build when the
-#    installed release predates it. Late on purpose: it changes most often.
+# 4. canfar-lab with `canfar lab web` (the Settings tab) and `canfar lab
+#    workspace` (code folder); fails the build when the installed release
+#    predates them. Late on purpose: it changes most often. The tab-strip logo
+#    comes from the same package.
 RUN --mount=from=canfar-lab-dist,target=/tmp/canfar-lab-dist \
     shopt -s nullglob; wheels=(/tmp/canfar-lab-dist/canfar_lab-*.whl); \
     if (( ${#wheels[@]} )); then \
@@ -125,7 +128,12 @@ RUN --mount=from=canfar-lab-dist,target=/tmp/canfar-lab-dist \
     fi \
     && /opt/canfar/bin/canfar-lab --version \
     && /opt/canfar/bin/canfar-lab web --help >/dev/null \
-    || { echo "canfar-lab has no 'web' command: pass a newer wheel via the canfar-lab-dist context" >&2; exit 1; }
+    && /opt/canfar/bin/canfar-lab workspace --help >/dev/null \
+    || { echo "canfar-lab lacks 'web'/'workspace': pass a newer wheel via the canfar-lab-dist context" >&2; exit 1; }
+RUN mkdir -p /opt/astroai/studio \
+    && /opt/canfar/bin/python -c "import importlib.resources as r, shutil; \
+shutil.copy(r.files('canfar_lab') / 'data' / 'brand' / 'astroai-logo.png', '/opt/astroai/studio/logo.png')" \
+    && chmod a+r /opt/astroai/studio/logo.png
 
 # 5. Proxy, tab table, startup.
 ENV PATH="/opt/astroai/bin:/opt/openvscode-server/bin:${PATH}" \
@@ -135,7 +143,8 @@ ENV PATH="/opt/astroai/bin:/opt/openvscode-server/bin:${PATH}" \
     ASTROAI_TERMINAL_PORT=4793 \
     ASTROAI_JUPYTER_PORT=8888 \
     ASTROAI_VSCODE_PORT=8080 \
-    ASTROAI_TABS_FILE=/opt/astroai/studio/tabs.json
+    ASTROAI_TABS_FILE=/opt/astroai/studio/tabs.json \
+    CANFAR_LAB_EXIT_SAVE_SEC=20
 
 COPY config/dsh-tabs.json /opt/astroai/studio/tabs.json
 COPY scripts/lib/dsh-canfar-proxy.py scripts/lib/session_title.py /opt/astroai/lib/

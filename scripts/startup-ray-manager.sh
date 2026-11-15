@@ -87,7 +87,7 @@ if [[ -n "${_srv}" ]]; then
     fi
 fi
 
-state_dir="${HOME}/.astroai/ray/clusters/${RAY_CLUSTER_ID}"
+state_dir="${HOME}/.canfar/lab/ray/clusters/${RAY_CLUSTER_ID}"
 mkdir -p "${state_dir}"
 export RAY_MANAGER_HEARTBEAT_PATH="${state_dir}/manager-heartbeat"
 touch "${RAY_MANAGER_HEARTBEAT_PATH}"
