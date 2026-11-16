@@ -166,7 +166,7 @@ def test_tab_table_and_matching() -> None:
     assert proxy.match_tab("/laboratory")["id"] == "agent"
     assert proxy.match_tab("/api/x")["id"] == "agent"
     labels = {t["id"]: (t["label"], t["icon"]) for t in proxy.TABS}
-    assert labels["agent"] == ("Studio", "") and labels["lab"] == ("Settings", "gear")
+    assert labels["agent"] == ("Chat", "") and labels["lab"] == ("Settings", "gear")
 
 
 def test_bad_tab_file_falls_back(tmp: Path | None = None) -> None:
@@ -174,7 +174,7 @@ def test_bad_tab_file_falls_back(tmp: Path | None = None) -> None:
     bad.write_text('{"tabs": [{"prefix": "no-slash", "port": 1}]}')
     fallback = proxy.load_tabs(str(bad))
     assert [t["id"] for t in fallback] == ["agent", "lab"]
-    assert [t["label"] for t in fallback] == ["Studio", "Settings"]
+    assert [t["label"] for t in fallback] == ["Chat", "Settings"]
     unknown = Path(tempfile.mkdtemp()) / "t.json"
     unknown.write_text('{"tabs": [{"id": "agent", "prefix": "/", "port": 1, "icon": "<svg>"}]}')
     assert proxy.load_tabs(str(unknown))[0]["icon"] == ""  # only known icons

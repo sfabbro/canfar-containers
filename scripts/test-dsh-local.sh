@@ -116,8 +116,8 @@ grep -q 'data-astroai-api-shim' <<<"${page}" || fail "Agent page has no session-
 lab="$(req -H 'Sec-Fetch-Dest: document' "${BASE}/lab/")"
 grep -q "<base href=\"/session/contrib/${SESSION_ID}/lab/\">" <<<"${lab}" || fail "Lab page has no session <base>"
 grep -q '"active": "lab"' <<<"${lab}" || fail "Lab page tab strip is not on Lab"
-# Tab strip: logo, "Studio", and Settings as a gear icon.
-grep -q '"label": "Studio"' <<<"${lab}" || fail "tab strip has no Studio tab"
+# Tab strip: logo, "Chat", and Settings as a gear icon.
+grep -q '"label": "Chat"' <<<"${lab}" || fail "tab strip has no Chat tab"
 grep -q '"label": "Settings", "href": "[^"]*", "badge": "api/onboarding", "end": true, "icon": "M' <<<"${lab}" \
     || fail "Settings tab is not a gear icon"
 logo="$(req -o /dev/null -w '%{http_code} %{content_type}' "${BASE}/__dsh/logo.png")"
@@ -166,7 +166,7 @@ switch_to() {  # $1 = mode, $2 = expected path
         [[ "$(req -o /dev/null -w '%{http_code}' "${BASE}/")" =~ ^(200|302)$ ]] && return 0
         sleep 2
     done
-    fail "Studio did not come back after the restart"
+    fail "Chat did not come back after the restart"
 }
 switch_to home /arc/home/testuser/src
 docker exec "${NAME}" test -d /arc/home/testuser/src || fail "~/src was not created"
@@ -214,7 +214,7 @@ docker exec "${NAME}" grep -q 'print(43)' /scratch/src/demo/later.py \
 ob="$(onboarding)"
 [[ "$(jget 'd["kind"]' <<<"${ob}")" == "returning" ]] || fail "returning user not recognised: ${ob}"
 code="$(req -b "${JAR}" -H 'Sec-Fetch-Dest: document' -o /dev/null -w '%{http_code}' "${BASE}/")"
-[[ "${code}" == "200" ]] || fail "returning user was not sent straight to the Studio tab (${code})"
+[[ "${code}" == "200" ]] || fail "returning user was not sent straight to the Chat tab (${code})"
 
-echo "OK: dsh Connect, Studio + Settings tabs, code folder switch + restart, private agent data,"
+echo "OK: dsh Connect, Chat + Settings tabs, code folder switch + restart, private agent data,"
 echo "    save, shutdown save, auto-restore in a new session (${IMAGE})"

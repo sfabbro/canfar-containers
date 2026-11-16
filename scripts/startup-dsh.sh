@@ -11,7 +11,7 @@ export CANFAR_LAB_WEB_PORT="${CANFAR_LAB_WEB_PORT:-4792}"
 export ASTROAI_TERMINAL_PORT="${ASTROAI_TERMINAL_PORT:-4793}"
 export ASTROAI_JUPYTER_PORT="${ASTROAI_JUPYTER_PORT:-8888}"
 export ASTROAI_VSCODE_PORT="${ASTROAI_VSCODE_PORT:-8080}"
-export ASTROAI_TAB_TITLE="${ASTROAI_TAB_TITLE:-AstroAI}"
+export ASTROAI_TAB_TITLE="${ASTROAI_TAB_TITLE:-CANFAR Studio}"
 
 # Per-session state on scratch (dies with the session; Settings snapshots carry it to /arc).
 _user="${USER:-${LOGNAME:-$(id -un 2>/dev/null || echo user)}}"

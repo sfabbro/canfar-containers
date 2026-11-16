@@ -55,7 +55,7 @@ SESSION_ID = (os.environ.get("skaha_sessionid") or "").strip()  # noqa: SIM112
 PREFIX = f"/session/contrib/{SESSION_ID}" if SESSION_ID else ""
 TABS_FILE = os.environ.get("ASTROAI_TABS_FILE", "/opt/astroai/studio/tabs.json")
 COOKIE_PREFIX = "dsh-auth-"
-BRAND_TITLE = os.environ.get("ASTROAI_TAB_TITLE", "AstroAI")
+BRAND_TITLE = os.environ.get("ASTROAI_TAB_TITLE", "CANFAR Studio")
 #: Square logo shown at the left of the tab strip (no text brand when present).
 LOGO_FILE = os.environ.get("ASTROAI_TAB_LOGO", "/opt/astroai/studio/logo.png")
 PROXY_REVISION = "dsh-2"
@@ -64,7 +64,7 @@ LOGO_ROUTE = "/__dsh/logo.png"
 STATUS_ROUTE = "/api/studio/status"
 
 DEFAULT_TABS: list[dict[str, Any]] = [
-    {"id": "agent", "label": "Studio", "prefix": "/", "port": 3080, "port_env": "DSH_PORT"},
+    {"id": "agent", "label": "Chat", "prefix": "/", "port": 3080, "port_env": "DSH_PORT"},
     {
         "id": "lab",
         "label": "Settings",
@@ -623,7 +623,7 @@ HOP_BY_HOP = {
 
 STARTING_HTML = (
     b"<!DOCTYPE html><html><head><meta charset='utf-8'/>"
-    b"<meta http-equiv='refresh' content='3'/><title>AstroAI</title></head>"
+    b"<meta http-equiv='refresh' content='3'/><title>CANFAR Studio</title></head>"
     b"<body style='font-family:system-ui,sans-serif;padding:2rem;line-height:1.5;"
     b"background:#0f1222;color:#e4e6f5'><h1>Your session is starting</h1>"
     b"<p>This page refreshes by itself. It usually takes under a minute.</p></body></html>"

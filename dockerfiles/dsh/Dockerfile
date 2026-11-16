@@ -16,7 +16,7 @@ ARG TAG=local
 # One pnpm for the image and every user (dsh plugin installs).
 ARG PNPM_VERSION=12.6.0
 # Same string as canfar-lab DSH_VERSION. Do not float the npm alpha tag.
-ARG DSH_VERSION=0.2.1-rc.3
+ARG DSH_VERSION=0.2.2-rc.3
 ARG GHOSTTY_WEB_VERSION=0.4.0-next.20.g1858a59
 ARG NODE_PTY_VERSION=1.1.0
 ARG WS_VERSION=8.21.3
@@ -35,7 +35,7 @@ ARG NODE_PTY_VERSION
 ARG WS_VERSION
 
 LABEL io.canfar.skaha.session.type="contributed" \
-      org.opencontainers.image.title="AstroAI dsh" \
+      org.opencontainers.image.title="CANFAR Studio" \
       org.opencontainers.image.description="Coding agents (dsh + Claude Code, Codex, Antigravity, OpenCode, Pi, Oh My Pi) with save/restore and Ray for CANFAR" \
       org.opencontainers.image.source="https://github.com/astroai/canfar-containers"
 
@@ -73,7 +73,7 @@ RUN command -v tmux \
         'set -g status-position top' \
         'set -g status-style "bg=colour234,fg=colour246"' \
         'set -g status-left-length 20' \
-        'set -g status-left "#[fg=colour117,bold] AstroAI #[default] "' \
+        'set -g status-left "#[fg=colour117,bold] CANFAR #[default] "' \
         'set -g window-status-current-style "fg=colour189,bold"' \
         'set -g status-right ""' \
         'set -s escape-time 10' \
@@ -105,7 +105,7 @@ RUN bash /tmp/install-openvscode-latest.sh \
     && rm -f /tmp/install-openvscode-latest.sh /tmp/openvscode-release.json \
     && mkdir -p /opt/openvscode-server/data/Machine
 COPY config/openvscode-settings.json /opt/openvscode-server/data/Machine/settings.json
-RUN sed -i 's/AstroAI Studio/AstroAI/' /opt/openvscode-server/data/Machine/settings.json \
+RUN sed -i 's/AstroAI Studio/CANFAR Studio/' /opt/openvscode-server/data/Machine/settings.json \
     && chmod a+r /opt/openvscode-server/data/Machine/settings.json
 
 # Agents live on $SCRATCH: the Lab installs the newest version at every session
@@ -130,10 +130,8 @@ RUN --mount=from=canfar-lab-dist,target=/tmp/canfar-lab-dist \
     && /opt/canfar/bin/canfar-lab web --help >/dev/null \
     && /opt/canfar/bin/canfar-lab workspace --help >/dev/null \
     || { echo "canfar-lab lacks 'web'/'workspace': pass a newer wheel via the canfar-lab-dist context" >&2; exit 1; }
-RUN mkdir -p /opt/astroai/studio \
-    && /opt/canfar/bin/python -c "import importlib.resources as r, shutil; \
-shutil.copy(r.files('canfar_lab') / 'data' / 'brand' / 'astroai-logo.png', '/opt/astroai/studio/logo.png')" \
-    && chmod a+r /opt/astroai/studio/logo.png
+# Tab-strip logo: the CANFAR mark on a dark tile (opencadc/canfar docs/static/logo.png).
+COPY config/canfar-logo.png /opt/astroai/studio/logo.png
 
 # 5. Proxy, tab table, startup.
 ENV PATH="/opt/astroai/bin:/opt/openvscode-server/bin:${PATH}" \
@@ -151,7 +149,7 @@ COPY scripts/lib/dsh-canfar-proxy.py scripts/lib/session_title.py /opt/astroai/l
 COPY scripts/common-init.sh scripts/startup-dsh.sh /cadc/
 COPY scripts/skaha-startup-dsh.sh /skaha/startup.sh
 RUN chmod a+rx /opt/astroai/lib/dsh-canfar-proxy.py /cadc/*.sh /skaha/startup.sh \
-    && chmod a+r /opt/astroai/lib/session_title.py /opt/astroai/studio/tabs.json \
+    && chmod a+r /opt/astroai/lib/session_title.py /opt/astroai/studio/tabs.json /opt/astroai/studio/logo.png \
     && python3 -m py_compile /opt/astroai/lib/dsh-canfar-proxy.py
 
 EXPOSE 5000
