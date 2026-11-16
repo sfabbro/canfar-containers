@@ -15,8 +15,11 @@ ARG BASE_NAME=base
 ARG TAG=local
 # One pnpm for the image and every user (dsh plugin installs).
 ARG PNPM_VERSION=12.6.0
-# Same string as canfar-lab DSH_VERSION. Do not float the npm alpha tag.
-ARG DSH_VERSION=0.2.2-rc.3
+# dsh is not pinned: every build takes the newest release (highest semver across
+# npm dist-tags). `make build-dsh` resolves it first and passes the exact
+# version, so the layer cache is reused only while that is still the newest.
+# Pass a version to build an older one: DSH_VERSION=0.2.1-rc.3 make build-dsh.
+ARG DSH_VERSION=newest
 ARG GHOSTTY_WEB_VERSION=0.4.0-next.20.g1858a59
 ARG NODE_PTY_VERSION=1.1.0
 ARG WS_VERSION=8.21.3
@@ -41,14 +44,19 @@ LABEL io.canfar.skaha.session.type="contributed" \
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
-# 1. dsh, pinned, in /opt/astroai. pnpm in a shared corepack home so plugin
-#    installs use the pinned version without a per-user download.
+# 1. The newest dsh in /opt/astroai. pnpm in a shared corepack home so plugin
+#    installs use one pnpm without a per-user download.
 ENV COREPACK_HOME=/opt/corepack \
     COREPACK_DEFAULT_TO_LATEST=0 \
     COREPACK_ENABLE_DOWNLOAD_PROMPT=0
-RUN test -n "${DSH_VERSION}" \
-    && npm install -g --prefix /opt/astroai "@deepseek-ai/dsh@${DSH_VERSION}" \
-    && /opt/astroai/bin/dsh --version | grep -F -- "${DSH_VERSION}" \
+COPY scripts/dsh-newest.sh /tmp/dsh-newest.sh
+RUN version="${DSH_VERSION}" \
+    && if [ -z "${version}" ] || [ "${version}" = newest ]; then version="$(bash /tmp/dsh-newest.sh)"; fi \
+    && echo "dsh ${version}" \
+    && npm install -g --prefix /opt/astroai "@deepseek-ai/dsh@${version}" \
+    && /opt/astroai/bin/dsh --version | grep -F -- "${version}" \
+    && printf '%s\n' "${version}" >/opt/astroai/dsh-version \
+    && rm -f /tmp/dsh-newest.sh \
     && corepack enable \
     && corepack prepare "pnpm@${PNPM_VERSION}" --activate \
     && chmod -R a+rX "${COREPACK_HOME}" \

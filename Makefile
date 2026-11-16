@@ -107,6 +107,12 @@ build-improc: ## build improc family (+ base)
 build-specproc: ## build specproc family (+ base)
 	TAG=$(BUILD_TAG) docker buildx bake $(BAKE_FLAGS) $(SPECPROC_IMAGES)
 
+# The dsh image takes the newest dsh release on every build (no pin). Resolving
+# it here gives bake an exact version, so a cached layer is reused only while
+# that version is still the newest. `make build/dsh DSH_VERSION=x.y.z` builds a
+# given one; with npm unreachable the build resolves it itself ("newest").
+build/dsh: export DSH_VERSION ?= $(shell ./scripts/dsh-newest.sh 2>/dev/null || echo newest)
+
 build/%:
 	TAG=$(BUILD_TAG) docker buildx bake $(BAKE_FLAGS) $(notdir $@)
 

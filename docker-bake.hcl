@@ -12,6 +12,12 @@ variable "TAG" {
   default = "local"
 }
 
+# dsh for the dsh image: an exact version, or "newest" to resolve inside the
+# build. `make build/dsh` sets it to the newest release (scripts/dsh-newest.sh).
+variable "DSH_VERSION" {
+  default = "newest"
+}
+
 variable "PYTHON_VERSION" {
   default = "3.13"
 }
@@ -152,6 +158,9 @@ target "dsh" {
   inherits   = ["_interface"]
   dockerfile = "dockerfiles/dsh/Dockerfile"
   tags       = ["${REGISTRY}/${OWNER}/dsh:${TAG}"]
+  args = {
+    DSH_VERSION = "${DSH_VERSION}"
+  }
 }
 
 # Ray cluster images
