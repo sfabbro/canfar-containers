@@ -275,7 +275,7 @@ if grep -Eiq \
 fi
 
 # studio: token redirect path must be armed (Skaha Connect omits ?token=).
-if [[ "${IMAGE}" == "studio" ]]; then
+if [[ "${IMAGE}" == *studio ]]; then
     if ! grep -q 'dsh web token captured for Skaha Connect redirect' "${LOGS}"; then
         echo "Studio logs missing dsh web token capture — Connect URL will 401." >&2
         FAILURES=$((FAILURES + 1))
@@ -293,31 +293,23 @@ if [[ "${IMAGE}" == "studio" ]]; then
 fi
 rm -f "${LOGS}"
 
-# studio: Terminal + AstroAI chips (same overlay as openresearch).
-if [[ "${FAILURES}" -eq 0 && "${IMAGE}" == "studio" ]]; then
+# studio: tab strip on the Chat page, Terminal and Settings tabs answer.
+if [[ "${FAILURES}" -eq 0 && "${IMAGE}" == *studio ]]; then
     BASE="${URL%/}"
     # Authed HTML may require following token redirect once.
     ROOT_HTML="$(curl -skL --max-time 30 "${URL}" || true)"
-    if ! grep -q 'astroai-terminal-chip' <<<"${ROOT_HTML}"; then
-        echo "Studio Terminal chip missing from root HTML." >&2
+    if ! grep -q 'astroai-tabs-config' <<<"${ROOT_HTML}"; then
+        echo "Studio tab strip missing from the Chat page." >&2
         FAILURES=$((FAILURES + 1))
     fi
-    if ! grep -q 'astroai-agents-chip' <<<"${ROOT_HTML}"; then
-        echo "Studio AstroAI chip missing from root HTML." >&2
-        FAILURES=$((FAILURES + 1))
-    fi
-    term_code="$(curl -sk -o /dev/null -w '%{http_code}' --max-time 20 "${BASE}/astroai-terminal/" || true)"
-    echo "Studio Terminal HTML HTTP ${term_code}"
-    if [[ "${term_code}" != "200" ]]; then
-        echo "Studio ghostty-web /astroai-terminal/ check failed." >&2
-        FAILURES=$((FAILURES + 1))
-    fi
-    hub_code="$(curl -sk -o /dev/null -w '%{http_code}' --max-time 20 "${BASE}/astroai-agents/" || true)"
-    echo "Studio Hub HTML HTTP ${hub_code}"
-    if [[ "${hub_code}" != "200" ]]; then
-        echo "Studio AstroAI hub /astroai-agents/ check failed." >&2
-        FAILURES=$((FAILURES + 1))
-    fi
+    for tab in terminal lab; do
+        code="$(curl -skL -o /dev/null -w '%{http_code}' --max-time 30 "${BASE}/${tab}/" || true)"
+        echo "Studio /${tab}/ HTTP ${code}"
+        if [[ "${code}" != "200" ]]; then
+            echo "Studio /${tab}/ check failed." >&2
+            FAILURES=$((FAILURES + 1))
+        fi
+    done
 fi
 
 # openresearch: AstroAI hub at /astroai-agents/ + ghostty at /astroai-terminal/

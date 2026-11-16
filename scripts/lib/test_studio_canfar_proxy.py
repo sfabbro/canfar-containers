@@ -1,582 +1,509 @@
-"""Prefix rewrite + API shim for AstroAI Studio (dsh) CANFAR proxy."""
+"""astroai/studio proxy: routes, Lab auth/prefix, SSE, Connect token, tab strip.
+
+Runs fake dsh and Lab upstreams on loopback and the real handler in front.
+Docker-free; ``python3 scripts/lib/test_studio_canfar_proxy.py``.
+"""
 
 from __future__ import annotations
 
 import importlib.util
-import io
 import json
 import os
+import socket
+import tempfile
+import threading
+import time
+from http.client import HTTPConnection
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from unittest import mock
 
 ROOT = Path(__file__).resolve().parent
-SPEC = importlib.util.spec_from_file_location(
-    "studio_canfar_proxy", ROOT / "studio-canfar-proxy.py"
-)
-assert SPEC and SPEC.loader
-proxy = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(proxy)
+SESSION = "abc123"
+P = f"/session/contrib/{SESSION}"
 
 
-def test_keeps_bare_api_channel_string() -> None:
-    """Channel must stay \"/api\" (CHANNEL_PATTERN)."""
-    proxy.PREFIX = "/session/contrib/abc"
-    js = b'const channel = "/api"; fetch(new URL(channel + "/x", origin));'
-    out = proxy.rewrite_body(js, "text/javascript")
-    assert b'const channel = "/api"' in out
-    assert b'const channel = "/session/contrib/abc/api"' not in out
+def _free_port() -> int:
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
 
 
-def test_rewrites_quoted_api_slash_paths() -> None:
-    """ "/api/…" (file, present, mux) must get the session prefix for img/href."""
-    proxy.PREFIX = "/session/contrib/abc"
-    js = b'const FILE = "/api/file";const MUX = "/api/remote.mux";const OPEN = "/api/present.open";'
-    out = proxy.rewrite_body(js, "text/javascript")
-    assert b'"/session/contrib/abc/api/file"' in out
-    assert b'"/session/contrib/abc/api/remote.mux"' in out
-    assert b'"/session/contrib/abc/api/present.open"' in out
-    assert b'"/api/file"' not in out
+SEEN: dict[str, dict[str, str]] = {}
 
 
-def test_rewrites_quoted_assets() -> None:
-    proxy.PREFIX = "/session/contrib/abc"
-    html = b'<script>import("/assets/index.js")</script>'
-    out = proxy.rewrite_body(html, "text/javascript")
-    assert b'"/session/contrib/abc/assets/index.js"' in out
+class FakeDsh(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
+    def log_message(self, *a) -> None:
+        pass
+
+    def do_GET(self) -> None:  # noqa: N802
+        SEEN["dsh"] = {"path": self.path, **dict(self.headers.items())}
+        if self.path.startswith("/api/blob"):
+            body, ctype = b'\x00"/api/x"' * 50_000, "application/octet-stream"
+        elif self.path.startswith("/api/doc"):
+            body, ctype = b'{"content": "fetch(\\"/api/x\\")"}', "application/json"
+        elif self.path.startswith("/api/file"):
+            body, ctype = b"<html><head></head><body>user file</body></html>", "text/html"
+        elif self.path.startswith("/?stale"):
+            self.send_response(401)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        else:
+            body = (
+                b"<html><head><title>x</title></head>"
+                b'<body><script src="/assets/a.js"></script></body></html>'
+            )
+            ctype = "text/html"
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Set-Cookie", "dsh-auth-1=v; Path=/; SameSite=Strict")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
 
-def test_injects_api_shim_and_chips() -> None:
-    proxy.PREFIX = "/session/contrib/abc"
-    html = b"<html><head></head><body><h1>dsh</h1></body></html>"
-    out = proxy.rewrite_body(html, "text/html")
-    assert b"data-astroai-api-shim" in out
-    assert b"instanceof URL" in out  # fetch(URL) rewrite for directoryPicker RPCs
-    assert b"ownsHost" in out  # Settings→Models needs isLoopback / ownsHost
-    assert b"window.WebSocket" in out
-    assert b"EventSource" in out
-    assert b'"/open-in-app/"' in out  # dsh open-in-app plugin fetches outside /api
-    assert b'id="astroai-terminal-chip"' in out
-    assert b'href="/session/contrib/abc/terminal/"' in out
-    assert b'id="astroai-agents-chip"' in out
-    assert b'id="astroai-jupyter-chip"' in out
-    assert b'href="/session/contrib/abc/jupyter/lab"' in out
-    assert b'id="astroai-marimo-chip"' in out
-    assert b'href="/session/contrib/abc/marimo/"' in out
-    assert b'id="astroai-vscode-chip"' in out
-    assert b'href="/session/contrib/abc/vscode/"' in out
-    assert b"astroai-resource-banner" not in out
-    assert b'data-astroai-proxy-rev="16"' in out
-    assert b'id="astroai-dock-config"' in out  # handle always present; bar starts collapsed
-    assert b'"enabled": false' in out
-    assert b"data-astroai-tab" in out  # branded tab stick
-    assert b"data-astroai-brand" in out  # boot splash wordmark
-    assert out.index(b"data-astroai-brand") < out.index(b"</head>")
+class FakeLab(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
+    def log_message(self, *a) -> None:
+        pass
+
+    def _reply(self) -> None:
+        SEEN["lab"] = {"path": self.path, "method": self.command, **dict(self.headers.items())}
+        if self.path == "/api/jobs/1/events":
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Connection", "close")  # as canfar_lab.web.server does
+            self.end_headers()
+            self.close_connection = True
+            for i in range(3):
+                self.wfile.write(f"data: line{i}\n\n".encode())
+                self.wfile.flush()
+                time.sleep(0.05)
+            return
+        if self.path == "/moved":
+            self.send_response(303)
+            self.send_header("Location", "/api/state")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        if self.path == "/":
+            body, ctype = b"<html><head></head><body>lab</body></html>", "text/html"
+        else:
+            body = json.dumps({"pending": 2, "ready": False, "kind": "new"}).encode()
+            ctype = "application/json"
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    do_GET = do_POST = do_HEAD = _reply  # noqa: N815
 
 
-def test_rewrites_base_href_to_session_prefix() -> None:
-    proxy.PREFIX = "/session/contrib/abc"
-    html = b'<html><head><base href="/"><link href="./assets/x.js"></head><body></body></html>'
-    out = proxy.rewrite_body(html, "text/html")
-    assert b'<base href="/session/contrib/abc/">' in out
-    assert b'<base href="/">' not in out
+def _serve(handler: type, port: int) -> ThreadingHTTPServer:
+    srv = ThreadingHTTPServer(("127.0.0.1", port), handler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv
 
 
-def test_rewrite_location_api() -> None:
-    proxy.PREFIX = "/session/contrib/abc"
-    assert proxy.rewrite_location("/api/foo") == "/session/contrib/abc/api/foo"
-    assert proxy.rewrite_location("/") == "/session/contrib/abc/"
-    assert proxy.rewrite_location("/?x=1") == "/session/contrib/abc/?x=1"
-    assert proxy.rewrite_location("/session/contrib/abc/") == "/session/contrib/abc/"
-
-
-def test_upstream_path_strips_session_prefix() -> None:
-    proxy.PREFIX = "/session/contrib/abc"
-    assert proxy.upstream_path("/session/contrib/abc/") == "/"
-    assert proxy.upstream_path("/session/contrib/abc/?token=t") == "/?token=t"
-    assert proxy.upstream_path("/session/contrib/abc/assets/x.js") == "/assets/x.js"
-    assert proxy.upstream_path("/api/x") == "/api/x"
-    proxy.PREFIX = ""
-    assert proxy.upstream_path("/session/contrib/abc/") == "/session/contrib/abc/"
-
-
-def test_no_prefix_leaves_absolute_paths() -> None:
-    proxy.PREFIX = ""
-    html = b'<html><body><script>fetch("/api/x")</script></body></html>'
-    out = proxy.rewrite_body(html, "text/html")
-    assert b'fetch("/api/x")' in out
-    assert b"data-astroai-api-shim" not in out
-
-
-def test_is_websocket_request() -> None:
-    class H:
-        headers: dict[str, str]
-
-    h = H()
-    h.headers = {"Connection": "Upgrade", "Upgrade": "websocket"}
-    assert proxy.is_websocket_request(h) is True
-    h.headers = {"Connection": "keep-alive"}
-    assert proxy.is_websocket_request(h) is False
-
-
-def test_index_token_redirect_adds_token(tmp_path: Path, monkeypatch) -> None:
-    token_file = tmp_path / "dsh-web-token"
-    token_file.write_text("sekrit\n", encoding="utf-8")
-    monkeypatch.setenv("ASTROAI_DSH_TOKEN_FILE", str(token_file))
-    proxy.TOKEN_FILE = str(token_file)
-    proxy.PREFIX = "/session/contrib/abc"
-    loc = proxy.index_token_redirect("/", None)
-    assert loc == "/session/contrib/abc/?token=sekrit"
-    assert proxy.index_token_redirect("/?token=sekrit", None) is None
-    assert proxy.index_token_redirect("/", "dsh-auth-xyz=1") is None
-    assert proxy.index_token_redirect("/api/x", None) is None
-
-
-def test_index_token_redirect_without_prefix(tmp_path: Path, monkeypatch) -> None:
-    token_file = tmp_path / "tok"
-    token_file.write_text("t1", encoding="utf-8")
-    monkeypatch.setenv("ASTROAI_DSH_TOKEN_FILE", str(token_file))
-    proxy.TOKEN_FILE = str(token_file)
-    proxy.PREFIX = ""
-    assert proxy.index_token_redirect("/", None) == "/?token=t1"
-
-
-def test_is_index_path() -> None:
-    proxy.PREFIX = ""
-    assert proxy._is_index_path("/") is True
-    assert proxy._is_index_path("/?token=x") is True
-    assert proxy._is_index_path("/api/x") is False
-    proxy.PREFIX = "/session/contrib/abc"
-    assert proxy._is_index_path("/session/contrib/abc/") is True
-    assert proxy._is_index_path("/session/contrib/abc") is True
-    assert proxy._is_index_path("/session/contrib/abc/api") is False
-
-
-def test_rewrite_set_cookie_relaxes_samesite() -> None:
-    raw = "dsh-auth-X=v1.abc; Max-Age=2592000; Path=/; HttpOnly; SameSite=Strict"
-    out = proxy.rewrite_set_cookie(raw)
-    assert "SameSite=Lax" in out
-    assert "SameSite=Strict" not in out
-
-
-def test_expire_dsh_auth_cookies() -> None:
-    proxy.PREFIX = "/session/contrib/abc"
-    headers = proxy.expire_dsh_auth_cookies("dsh-auth-dead=v1.x; other=1; dsh-auth-dead=v1.x")
-    assert any(h.startswith("dsh-auth-dead=; Max-Age=0; Path=/") for h in headers)
-    assert any(
-        h.startswith("dsh-auth-dead=; Max-Age=0; Path=/session/contrib/abc/") for h in headers
+def _load_proxy(dsh_port: int, lab_port: int, token_file: Path):
+    tabs = Path(tempfile.mkdtemp()) / "tabs.json"
+    cfg = json.loads((ROOT.parent.parent / "config" / "studio-tabs.json").read_text())
+    tabs.write_text(json.dumps(cfg))
+    os.environ.update(
+        {
+            "skaha_sessionid": SESSION,
+            "ASTROAI_TABS_FILE": str(tabs),
+            "DSH_PORT": str(dsh_port),
+            "CANFAR_LAB_WEB_PORT": str(lab_port),
+            "CANFAR_LAB_WEB_TOKEN": "labsecret",
+            "ASTROAI_DSH_TOKEN_FILE": str(token_file),
+            # On-demand tools: ports nothing listens on, and a state dir for requests.
+            "ASTROAI_TERMINAL_PORT": str(_free_port()),
+            "ASTROAI_JUPYTER_PORT": str(_free_port()),
+            "ASTROAI_VSCODE_PORT": str(_free_port()),
+            "ASTROAI_STUDIO_STATE": STATE_DIR,
+        }
     )
-    assert len(headers) == 2  # deduped name, two paths
-
-
-def test_starting_html_is_refreshable() -> None:
-    assert b'meta http-equiv="refresh"' in proxy.STARTING_HTML
-    assert b"AstroAI Studio is starting" in proxy.STARTING_HTML
-
-
-def test_get_studio_status() -> None:
-    status = proxy.get_studio_status()
-    assert "status" in status
-    assert "services" in status
-    assert "agent" in status["services"]
-    assert "terminal" in status["services"]
-    assert "jupyter" in status["services"]
-    assert "marimo" in status["services"]
-    assert "vscode" in status["services"]
-    assert "hub" in status["services"]
-    assert "resources" in status
-    assert "scratch_free_gb" in status["resources"]
-
-
-def test_command_dock_template() -> None:
-    proxy.PREFIX = "/session/contrib/test123"
-    dock = proxy.command_dock_html()
-    assert "data-astroai-dock" in dock
-    assert "/session/contrib/test123/jupyter/lab" in dock
-    assert "/session/contrib/test123/marimo/" in dock
-    assert "/session/contrib/test123/vscode/" in dock
-    assert "/session/contrib/test123/terminal/" in dock
-    assert 'data-tool="agent"' in dock
-    assert 'data-mode="bar"' in dock
-    assert "{prefix" not in dock and "{mode}" not in dock
-    assert 'href="/session/contrib/test123/hub/#agents"' in dock
-    assert 'href="/session/contrib/test123/hub/#compute"' in dock
-    assert ">Assistant<" in dock and ">Agents<" in dock and ">Compute<" in dock
-    # VS Code's CSP blocks inline scripts: the only script is the same-origin dock.js.
-    import re as _re
-
-    scripts = _re.findall(r"<script[^>]*>", dock)
-    assert scripts == ['<script src="/session/contrib/test123/__studio/dock.js" defer>']
-    assert not any(ch in dock for ch in "🤖💻🪐⚡📝🚀")
-
-
-def test_studio_assets_are_branded() -> None:
-    body, ctype = proxy.STUDIO_ASSETS["/__studio/dock.js"]
-    assert ctype.startswith("text/javascript") and b"attachShadow" in body
-    assert b"<svg" in proxy.STUDIO_ASSETS["/favicon.svg"][0]
-    manifest = proxy.json.loads(proxy.STUDIO_ASSETS["/manifest.webmanifest"][0])
-    assert manifest["name"] == "AstroAI Studio"
-
-
-def test_assistant_bar_reserves_its_strip_and_nudges_for_a_key() -> None:
-    proxy.PREFIX = "/session/contrib/abc"
-    out = proxy.rewrite_body(
-        b"<html><head></head><body><div id=root></div></body></html>", "text/html"
+    spec = importlib.util.spec_from_file_location(
+        "studio_canfar_proxy", ROOT / "studio-canfar-proxy.py"
     )
-    # dsh's layout starts below the bar instead of under it (the session title stays visible).
-    assert b"padding-top: 44px" in out and b"calc(100vh - 44px)" in out
-    assert b".bar .dock {" in out and b"height: 44px" in out
-    assert b"data-nokey hidden" in out
-    assert b'href="/session/contrib/abc/hub/#agents" data-nokey' in out
-    js = proxy.STUDIO_ASSETS["/__studio/dock.js"][0]
-    assert b"'/hub/api/keys'" in js and b"k.dsh_route && k.present" in js
-    # tool pages keep their own layout: no reserved strip there.
-    assert b"padding-top" not in proxy.inject_dock(b"<html><body></body></html>", "text/html")
+    assert spec and spec.loader
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
 
 
-def test_vscode_gets_configuration_defaults(tmp_path: Path, monkeypatch) -> None:
-    import html as _html
+STATE_DIR = tempfile.mkdtemp()
+DSH_PORT, LAB_PORT, PROXY_PORT = _free_port(), _free_port(), _free_port()
+TOKEN_FILE = Path(tempfile.mkdtemp()) / "dsh-web-token"
+proxy = _load_proxy(DSH_PORT, LAB_PORT, TOKEN_FILE)
+LAB_TAB = next(t for t in proxy.TABS if t["id"] == "lab")
 
-    settings = tmp_path / "settings.json"
+
+def _get(path: str, headers: dict[str, str] | None = None, method: str = "GET", body=None):
+    conn = HTTPConnection("127.0.0.1", PROXY_PORT, timeout=10)
+    conn.request(
+        method, path, body=body, headers={"Host": "workloads.canfar.net", **(headers or {})}
+    )
+    resp = conn.getresponse()
+    data = resp.read()
+    conn.close()
+    return resp, data
+
+
+def test_tab_table_and_matching() -> None:
+    ids = [t["id"] for t in proxy.TABS]
+    assert ids == ["agent", "terminal", "jupyter", "marimo", "vscode", "lab"], ids
+    starts = {t["id"] for t in proxy.TABS if t["start"]}
+    assert starts == {"terminal", "jupyter", "marimo", "vscode"}
+    assert [t["id"] for t in proxy.TABS if t["align"] == "end"] == ["lab"]
+    assert proxy.match_tab("/terminal/ws")["id"] == "terminal"
+    assert not next(t for t in proxy.TABS if t["id"] == "jupyter")["strip"]
+    assert proxy.match_tab("/lab/api/state")["id"] == "lab"
+    assert proxy.match_tab("/lab")["id"] == "lab"
+    assert proxy.match_tab("/laboratory")["id"] == "agent"
+    assert proxy.match_tab("/api/x")["id"] == "agent"
+    labels = {t["id"]: (t["label"], t["icon"]) for t in proxy.TABS}
+    assert labels["agent"] == ("Chat", "") and labels["lab"] == ("Settings", "gear")
+
+
+def test_bad_tab_file_falls_back(tmp: Path | None = None) -> None:
+    bad = Path(tempfile.mkdtemp()) / "t.json"
+    bad.write_text('{"tabs": [{"prefix": "no-slash", "port": 1}]}')
+    fallback = proxy.load_tabs(str(bad))
+    assert [t["id"] for t in fallback] == ["agent", "lab"]
+    assert [t["label"] for t in fallback] == ["Chat", "Settings"]
+    unknown = Path(tempfile.mkdtemp()) / "t.json"
+    unknown.write_text('{"tabs": [{"id": "agent", "prefix": "/", "port": 1, "icon": "<svg>"}]}')
+    assert proxy.load_tabs(str(unknown))[0]["icon"] == ""  # only known icons
+
+
+def test_doubled_session_prefix_collapses() -> None:
+    assert proxy.upstream_path(f"{P}{P}/api/remote.mux?x=1") == "/api/remote.mux?x=1"
+    assert proxy.upstream_path(f"{P}/lab/") == "/lab/"
+    assert proxy.upstream_path("/elsewhere") == "/elsewhere"
+    resp, _ = _get(f"{P}{P}/lab/api/state")
+    assert resp.status == 200 and SEEN["lab"]["path"] == "/api/state"
+
+
+def test_status_endpoint() -> None:
+    resp, data = _get(f"{P}/api/studio/status")
+    assert resp.status == 200
+    doc = json.loads(data)
+    assert doc["status"] == "ready" and doc["services"]["lab"]["up"] is True
+
+
+def test_starting_page_before_dsh_token() -> None:
+    TOKEN_FILE.unlink(missing_ok=True)
+    resp, data = _get(f"{P}/")
+    assert resp.status == 200 and b"starting" in data
+
+
+def test_connect_token_redirect() -> None:
+    TOKEN_FILE.write_text("tok123\n")
+    resp, _ = _get(f"{P}/")
+    assert resp.status == 302
+    assert resp.getheader("Location") == f"{P}/?token=tok123"
+
+
+def test_dsh_page_rewritten_with_tabs() -> None:
+    TOKEN_FILE.write_text("tok123\n")
+    resp, data = _get(
+        f"{P}/", {"Cookie": "dsh-auth-1=v; astroai-onboarded=1", "Sec-Fetch-Dest": "document"}
+    )
+    assert resp.status == 200
+    assert f'"{P}/assets/a.js"'.encode() in data
+    assert b"data-astroai-api-shim" in data
+    assert b'id="astroai-tabs-config"' in data
+    cfg = json.loads(data.split(b'type="application/json">')[1].split(b"</script>")[0])
+    assert cfg["active"] == "agent"
+    assert [t["href"] for t in cfg["tabs"]] == [
+        f"{P}/",
+        f"{P}/terminal/",
+        f"{P}/jupyter/",
+        f"{P}/marimo/",
+        f"{P}/vscode/",
+        f"{P}/lab/",
+    ]
+    lab = cfg["tabs"][-1]
+    assert lab["badge"] == "api/onboarding" and lab["end"] is True
+    assert f'src="{P}/__dsh/tabs.js"'.encode() in data
+    assert "SameSite=Lax" in resp.getheader("Set-Cookie")
+    assert SEEN["dsh"]["Host"] == "workloads.canfar.net"
+    assert "X-Forwarded-Prefix" not in SEEN["dsh"]
+
+
+def test_brand_new_session_opens_the_checklist_once() -> None:
+    TOKEN_FILE.write_text("tok123\n")
+    doc = {"Sec-Fetch-Dest": "document"}
+    resp, _ = _get(f"{P}/", {"Cookie": "dsh-auth-1=v", **doc})
+    assert resp.status == 302 and resp.getheader("Location") == f"{P}/lab/"
+    cookie = resp.getheader("Set-Cookie")
+    assert cookie.startswith("astroai-onboarded=1") and f"Path={P}/" in cookie
+    assert SEEN["lab"]["path"] == "/api/onboarding"
+    assert SEEN["lab"]["Authorization"] == "Bearer labsecret"
+    resp, data = _get(f"{P}/", {"Cookie": "dsh-auth-1=v; astroai-onboarded=1", **doc})
+    assert resp.status == 200 and b"astroai-tabs-config" in data
+    # Not for API calls or iframes, and never before dsh's own login.
+    resp, _ = _get(f"{P}/", {"Cookie": "dsh-auth-1=v", "Sec-Fetch-Dest": "iframe"})
+    assert resp.status == 200
+
+
+def test_no_tabs_in_iframes_or_user_files() -> None:
+    _, data = _get(f"{P}/api/file?p=x.html", {"Cookie": "dsh-auth-1=v", "Sec-Fetch-Dest": "iframe"})
+    assert b"astroai-tabs-config" not in data
+    _, data = _get(f"{P}/api/file?p=x.html", {"Cookie": "dsh-auth-1=v"})
+    assert b"astroai-tabs-config" not in data
+
+
+def test_stale_dsh_cookie_recovers() -> None:
+    TOKEN_FILE.write_text("tok123\n")
+    resp, _ = _get(f"{P}/?stale=1", {"Cookie": "dsh-auth-1=old; astroai-onboarded=1"})
+    assert resp.status == 302, resp.status
+    assert "token=tok123" in resp.getheader("Location")
+    assert any("Max-Age=0" in v for k, v in resp.getheaders() if k.lower() == "set-cookie")
+
+
+def test_lab_redirect_and_page() -> None:
+    resp, _ = _get(f"{P}/lab")
+    assert resp.status == 302 and resp.getheader("Location") == f"{P}/lab/"
+    resp, data = _get(f"{P}/lab/", {"Sec-Fetch-Dest": "document", "Authorization": "Bearer evil"})
+    assert resp.status == 200 and b"lab" in data
+    assert SEEN["lab"]["path"] == "/"
+    assert SEEN["lab"]["Authorization"] == "Bearer labsecret"
+    assert SEEN["lab"]["X-Forwarded-Prefix"] == f"{P}/lab"
+    cfg = json.loads(data.split(b'type="application/json">')[1].split(b"</script>")[0])
+    assert cfg["active"] == "lab"
+    assert b"data-astroai-api-shim" not in data  # Lab uses relative URLs + <base>
+
+
+def test_lab_api_and_write_header_pass_through() -> None:
+    resp, data = _get(
+        f"{P}/lab/api/agents/opencode/install",
+        {"X-Canfar-Lab": "1", "Content-Type": "application/json"},
+        method="POST",
+        body=b"{}",
+    )
+    assert resp.status == 200
+    assert SEEN["lab"]["path"] == "/api/agents/opencode/install"
+    assert SEEN["lab"]["X-Canfar-Lab"] == "1"
+    assert b"astroai-tabs-config" not in data
+
+
+def test_lab_sse_streams_unbuffered() -> None:
+    conn = HTTPConnection("127.0.0.1", PROXY_PORT, timeout=10)
+    conn.request("GET", f"{P}/lab/api/jobs/1/events", headers={"Accept": "text/event-stream"})
+    resp = conn.getresponse()
+    assert resp.status == 200
+    assert resp.getheader("Content-Type") == "text/event-stream"
+    assert resp.getheader("Content-Length") is None
+    first = resp.fp.readline()
+    assert first == b"data: line0\n", first
+    rest = resp.read()
+    assert b"line2" in rest
+    conn.close()
+
+
+def test_dsh_json_is_never_rewritten() -> None:
+    _, data = _get(f"{P}/api/doc", {"Cookie": "dsh-auth-1=v"})
+    assert data == b'{"content": "fetch(\\"/api/x\\")"}', data
+
+
+def test_head_passes_upstream_length_untouched() -> None:
+    resp, data = _get(f"{P}/lab/", {"Sec-Fetch-Dest": "document"}, method="HEAD")
+    assert resp.status == 200 and data == b""
+    assert resp.getheader("Content-Length") == str(
+        len(b"<html><head></head><body>lab</body></html>")
+    )
+
+
+def test_lab_absolute_redirect_stays_under_session() -> None:
+    resp, _ = _get(f"{P}/lab/moved")
+    assert resp.getheader("Location") == f"{P}/lab/api/state"
+
+
+def test_request_body_framing() -> None:
+    resp, _ = _get(
+        f"{P}/lab/api/x", {"Transfer-Encoding": "chunked"}, method="POST", body=b"0\r\n\r\n"
+    )
+    assert resp.status == 411
+    conn = HTTPConnection("127.0.0.1", PROXY_PORT, timeout=10)
+    conn.putrequest("POST", f"{P}/lab/api/x")
+    conn.putheader("Content-Length", "-5")
+    conn.endheaders()
+    assert conn.getresponse().status == 400
+    conn.close()
+
+
+def test_early_redirect_closes_connection() -> None:
+    resp, _ = _get(f"{P}/lab", method="POST", body=b"leftover-body")
+    assert resp.status == 302 and resp.getheader("Connection") == "close"
+
+
+def test_opening_a_stopped_tool_requests_its_start() -> None:
+    request = Path(STATE_DIR) / "tools" / "jupyter"
+    request.unlink(missing_ok=True)
+    resp, data = _get(f"{P}/jupyter/lab", {"Sec-Fetch-Dest": "document"})
+    assert resp.status == 503 and b"Opening JupyterLab" in data
+    assert b"first time" in data and b"astroai-tabs-config" in data
+    assert request.exists()
+    # A tool without "start" (the Lab) never drops a request.
+    saved = LAB_TAB["port"]
+    LAB_TAB["port"] = _free_port()
+    try:
+        _get(f"{P}/lab/")
+        assert not (Path(STATE_DIR) / "tools" / "lab").exists()
+    finally:
+        LAB_TAB["port"] = saved
+
+
+def test_unstripped_tool_keeps_its_base_path() -> None:
+    """JupyterLab serves under /session/contrib/<id>/jupyter itself."""
+    seen: dict[str, str] = {}
+
+    class FakeJupyter(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def log_message(self, *a) -> None:
+            pass
+
+        def do_GET(self) -> None:  # noqa: N802
+            seen["path"] = self.path
+            seen["prefix"] = self.headers.get("X-Forwarded-Prefix") or ""
+            self.send_response(200)
+            self.send_header("Content-Length", "2")
+            self.end_headers()
+            self.wfile.write(b"ok")
+
+    tab = next(t for t in proxy.TABS if t["id"] == "jupyter")
+    port = _free_port()
+    srv = _serve(FakeJupyter, port)
+    saved, tab["port"] = tab["port"], port
+    try:
+        resp, _ = _get(f"{P}/jupyter/api/status")
+        assert resp.status == 200 and seen["path"] == f"{P}/jupyter/api/status"
+        assert seen["prefix"] == ""
+    finally:
+        tab["port"] = saved
+        srv.shutdown()
+
+
+def test_html_navigation_without_fetch_metadata_gets_tabs() -> None:
+    """Plain-http origins get no Sec-Fetch-*; a request asking for HTML is a page view."""
+    page = {
+        "Accept": "text/html,application/xhtml+xml",
+        "Cookie": "dsh-auth-1=v; astroai-onboarded=1",
+    }
+    _, data = _get(f"{P}/deep/route", page)
+    assert b"astroai-tabs-config" in data
+    _, data = _get(f"{P}/api/file?p=x.html", {"Accept": "*/*", "Cookie": "dsh-auth-1=v"})
+    assert b"astroai-tabs-config" not in data
+
+
+def test_vscode_trust_patch() -> None:
+    settings = Path(tempfile.mkdtemp()) / "settings.json"
     settings.write_text(
-        '{"security.workspace.trust.enabled": false, "workbench.startupEditor": "none"}',
-        encoding="utf-8",
+        json.dumps({"security.workspace.trust.enabled": False, "editor.fontSize": 14})
     )
-    monkeypatch.setattr(proxy, "VSCODE_SETTINGS", str(settings))
-    proxy.PREFIX = "/session/contrib/abc"
-    cfg = {"serverBasePath": "/session/contrib/abc/vscode", "enableWorkspaceTrust": True}
+    proxy.VSCODE_SETTINGS = str(settings)
+    cfg = json.dumps({"remoteAuthority": "x", "configurationDefaults": {"a": 1}})
     page = (
         '<html><head><meta id="vscode-workbench-web-configuration" data-settings="'
-        + _html.escape(proxy.json.dumps(cfg), quote=True)
+        + proxy.html.escape(cfg, quote=True)
         + '"></head><body></body></html>'
     ).encode()
-    out = proxy.inject_vscode(page, "text/html").decode()
-    raw = proxy._VSCODE_WEB_CONFIG_RE.search(out).group(2)
-    got = proxy.json.loads(_html.unescape(raw))
-    assert got["enableWorkspaceTrust"] is False
-    assert got["configurationDefaults"]["workbench.startupEditor"] == "none"
-    assert got["serverBasePath"] == cfg["serverBasePath"]
-    assert 'data-mode="mini"' in out
-    assert proxy.inject_vscode(b"x", "text/javascript") == b"x"
+    out = proxy.patch_vscode(page, "text/html").decode()
+    raw = out.split('data-settings="')[1].split('"')[0]
+    patched = json.loads(proxy.html.unescape(raw))
+    assert patched["enableWorkspaceTrust"] is False
+    assert patched["configurationDefaults"] == {
+        "a": 1,
+        "security.workspace.trust.enabled": False,
+        "editor.fontSize": 14,
+    }
+    assert proxy.patch_vscode(b"{}", "application/json") == b"{}"
 
 
-def test_terminal_gets_corner_dock() -> None:
-    proxy.PREFIX = "/session/contrib/abc"
-    out = proxy.inject_corner_dock(b"<html><head></head><body></body></html>", "text/html")
-    assert b'data-mode="corner"' in out
+def test_tabs_js_served() -> None:
+    resp, data = _get(f"{P}/__dsh/tabs.js")
+    assert resp.status == 200 and b"attachShadow" in data
 
 
-def test_inject_dock_leaves_tool_urls_alone() -> None:
-    """Jupyter/marimo/vscode already serve under PREFIX: no rewrite, no dsh shim."""
-    proxy.PREFIX = "/session/contrib/abc"
-    html = (
-        b'<html><head><base href="/session/contrib/abc/marimo/"></head>'
-        b'<body><script>fetch("/api/home/recent_files")</script></body></html>'
-    )
-    out = proxy.inject_dock(html, "text/html; charset=utf-8")
-    assert b'fetch("/api/home/recent_files")' in out
-    assert b"data-astroai-api-shim" not in out
-    assert b"data-astroai-dock" in out
-    assert b'data-mode="mini"' in out
-    assert out.index(b"data-astroai-dock") < out.index(b"</body>")
-    js = b'fetch("/api/x")'
-    assert proxy.inject_dock(js, "application/javascript") == js
-
-
-def test_status_reports_workdir(tmp_path: Path, monkeypatch) -> None:
-    (tmp_path / "studio-cwd").write_text("/scratch/src\n", encoding="utf-8")
-    monkeypatch.setenv("ASTROAI_STUDIO_STATE", str(tmp_path))
-    status = proxy.get_studio_status()
-    assert status["workdir"] == "/scratch/src"
-    assert status["workdir_ephemeral"] is True
-    assert proxy._is_ephemeral("/srcdir")
-    assert proxy._is_ephemeral("/arcade/x")
-    assert not proxy._is_ephemeral("/arc/home/u/work")
-    assert not proxy._is_ephemeral("/arc/projects/p")
-
-
-# ---------------------------------------------------------------------------
-# Desk dock + /api/studio/sync (session side of docs/desk-sync.md)
-# ---------------------------------------------------------------------------
-
-
-class _FakeHandler:
-    def __init__(self, *, token: str = "", client: tuple[str, int] = ("10.0.0.9", 1)) -> None:
-        self.headers = {"X-Desk-Token": token} if token else {}
-        self.client_address = client
-
-
-def test_vendored_desk_dock_asset_matches_its_lock() -> None:
-    asset = proxy.desk_dock_html()
-    assert "astroai-dock-revision" in asset
-    assert 'id="astroai-dock"' in asset
-    lock = (ROOT.parent.parent / "config" / "desk-assets.lock").read_text(encoding="utf-8")
-    assert "dock_sha256=" in lock and "dock_revision=" in lock
-
-
-def test_desk_dock_starts_collapsed_by_default() -> None:
-    proxy.PREFIX = "/session/contrib/abc"
-    html = b"<html><head></head><body><h1>dsh</h1></body></html>"
-    env = {k: v for k, v in os.environ.items() if k != "CANFAR_LAB_DESK"}
-    with mock.patch.dict(os.environ, env, clear=True):
-        out = proxy.rewrite_body(html, "text/html")
-        snippet = proxy.desk_dock_snippet()
-    assert b"astroai-dock-config" in out
-    assert b'"enabled": false' in out
-    assert '"enabled": false' in snippet
-    assert "Sync to CANFAR" in snippet
-    proxy.PREFIX = ""
-
-
-def test_desk_dock_injected_when_enabled() -> None:
-    proxy.PREFIX = "/session/contrib/abc"
-    html = b"<html><head></head><body><h1>dsh</h1></body></html>"
-    with mock.patch.dict(os.environ, {"CANFAR_LAB_DESK": "1"}):
-        out = proxy.rewrite_body(html, "text/html")
-        snippet = proxy.desk_dock_snippet()
-    assert b'id="astroai-dock-config"' in out
-    assert b'"enabled": true' in out
-    assert b"astroai-dock-revision" in out
-    assert b"Sync to CANFAR" in out
-    assert b"Launch Studio" in out
-    assert b"Desktop sync" not in out
-    assert b'"/session/contrib/abc/api/studio/sync"' in out
-    assert out.index(b"astroai-dock-config") < out.index(b"</body>")
-    assert b"astroai-dock-config" not in proxy.inject_dock(html, "text/html")
-    assert proxy.DESK_TOKEN in snippet
-    assert '"mode": "session"' in snippet
-    assert '"enabled": true' in snippet
-    assert '"action": "sync_to_canfar"' in snippet
-    assert '"action": "launch_studio"' in snippet
-    proxy.PREFIX = ""
-
-
-def test_sync_authorized_token_or_loopback() -> None:
-    assert proxy.sync_authorized(_FakeHandler(token=proxy.DESK_TOKEN)) is True
-    assert proxy.sync_authorized(_FakeHandler(token="nope")) is False
-    assert proxy.sync_authorized(_FakeHandler()) is False
-    assert proxy.sync_authorized(_FakeHandler(client=("127.0.0.1", 5))) is True
-    assert proxy.sync_authorized(_FakeHandler(client=("::1", 5))) is True
-
-
-def test_sync_state_reads_the_mailbox(tmp_path: Path) -> None:
-    box = tmp_path / ".canfar" / "lab" / "sync"
-    for kind in ("requests", "events", "processing", "state"):
-        (box / kind).mkdir(parents=True)
-    (box / "ready.json").write_text(
-        json.dumps({"side": "session", "ts": proxy._utc_now()}), encoding="utf-8"
-    )
-    (box / "requests" / "r1.json").write_text("{}", encoding="utf-8")
-    (box / "state" / "session.json").write_text(
-        '{"absorbed_at": "2026-10-17T00:00:00Z"}', encoding="utf-8"
-    )
-    with mock.patch.dict(os.environ, {"HOME": str(tmp_path)}):
-        state = proxy.get_sync_state()
-    assert state["mode"] == "session"
-    assert set(state["dsh"]) == {"spec", "installed", "release"}
-    assert "version" in state["lab"]
-    mailbox = state["mailbox"]
-    assert mailbox["exists"] is True
-    assert mailbox["session_ready"] is True
-    assert mailbox["counts"]["requests"] == 1
-    assert mailbox["last_exchange"]["absorbed_at"] == "2026-10-17T00:00:00Z"
-    # A marker from an earlier boot (> 2 h) or without a timestamp must not
-    # claim the watcher is up — same rule as canfar-lab's bus.read_ready.
-    for stale in ('{"side": "session", "ts": "2020-01-01T00:00:00Z"}', '{"side": "session"}'):
-        (box / "ready.json").write_text(stale, encoding="utf-8")
-        with mock.patch.dict(os.environ, {"HOME": str(tmp_path)}):
-            assert proxy.get_sync_state()["mailbox"]["session_ready"] is False
-
-
-def test_run_desktop_sync_parses_cli_json() -> None:
-    stdout = (
-        '{\n  "to": "desktop",\n  "event": "e.json",\n  "mailbox": "/box",\n'
-        '  "published": {"op": "publish", "repos": []}\n}\n'
-    )
-    completed = proxy.subprocess.CompletedProcess([], 0, stdout, "")
-    with (
-        mock.patch.object(proxy, "_lab_binary", return_value="/x/canfar-lab"),
-        mock.patch.object(proxy, "_studio_workdir", return_value="/scratch/src"),
-        mock.patch.object(proxy.subprocess, "run", return_value=completed) as run,
-    ):
-        result = proxy.run_desktop_sync({"dry_run": True})
-    assert result["ok"] is True
-    assert result["action"] == "sync_to_desktop"
-    assert result["event"] == "e.json"
-    assert result["report"]["op"] == "publish"
-    args = run.call_args[0][0]
-    assert args == ["/x/canfar-lab", "--json", "--dry-run", "sync", "exchange", "--to", "desktop"]
-    assert run.call_args.kwargs["cwd"] == "/scratch/src"
-
-
-def test_run_desktop_sync_single_flight() -> None:
-    assert proxy._SYNC_LOCK.acquire(blocking=False)
+def test_tab_strip_config_has_icon_and_logo() -> None:
+    logo = Path(tempfile.mkdtemp()) / "logo.png"
+    logo.write_bytes(b"\x89PNG\r\n\x1a\nfake")
+    saved = proxy.LOGO_FILE
+    proxy.LOGO_FILE = str(logo)
     try:
-        with mock.patch.object(proxy, "_lab_binary", return_value="/x/canfar-lab"):
-            try:
-                proxy.run_desktop_sync({})
-            except proxy.SyncBusy:
-                pass
-            else:
-                raise AssertionError("expected SyncBusy while a run is in flight")
+        cfg = json.loads(proxy.tabs_snippet("agent").split(">", 1)[1].split("</script>", 1)[0])
+        assert cfg["logo"].endswith("/__dsh/logo.png")
+        lab = next(t for t in cfg["tabs"] if t["id"] == "lab")
+        assert lab["label"] == "Settings" and lab["icon"].startswith("M19.14")
+        resp, data = _get(f"{P}/__dsh/logo.png")
+        assert resp.status == 200 and resp.getheader("Content-Type") == "image/png"
+        assert data.startswith(b"\x89PNG")
+        proxy.LOGO_FILE = str(logo.with_name("missing.png"))
+        cfg = json.loads(proxy.tabs_snippet("agent").split(">", 1)[1].split("</script>", 1)[0])
+        assert cfg["logo"] == ""  # falls back to the text brand
     finally:
-        proxy._SYNC_LOCK.release()
+        proxy.LOGO_FILE = saved
 
 
-def test_run_sync_action_rejects_unknown() -> None:
+def test_lab_down_says_starting() -> None:
+    saved = LAB_TAB["port"]
+    LAB_TAB["port"] = _free_port()
     try:
-        proxy.run_sync_action("nope", {})
-    except ValueError as exc:
-        assert "nope" in str(exc)
-    else:
-        raise AssertionError("expected ValueError for an unknown action")
+        resp, data = _get(f"{P}/lab/")
+        assert resp.status == 503 and b"Opening Settings" in data
+    finally:
+        LAB_TAB["port"] = saved
 
 
-def test_run_cluster_status_uses_cli() -> None:
-    completed = proxy.subprocess.CompletedProcess([], 0, '{"state": "running"}', "")
-    with (
-        mock.patch.object(proxy, "_lab_binary", return_value="/x/canfar-lab"),
-        mock.patch.object(proxy.subprocess, "run", return_value=completed) as run,
-    ):
-        result = proxy.run_cluster({"mode": "status"})
-    assert result["ok"] is True
-    assert result["manager"] == {"state": "running"}
-    # `--json` must sit after the subcommand: `cluster status` reads its own
-    # flag, not the root callback's (unlike `sync exchange`).
-    assert run.call_args[0][0] == ["/x/canfar-lab", "cluster", "status", "--json"]
+def test_dsh_cookie_is_scoped_to_the_session() -> None:
+    resp, _ = _get(f"{P}/assets/a.js")
+    cookie = next(v for k, v in resp.getheaders() if k.lower() == "set-cookie")
+    assert f"Path={P}/" in cookie and "SameSite=Lax" in cookie, cookie
 
 
-def test_run_cluster_start_detaches(tmp_path: Path) -> None:
-    with (
-        mock.patch.object(proxy, "_lab_binary", return_value="/x/canfar-lab"),
-        mock.patch.object(proxy, "_studio_workdir", return_value=None),
-        mock.patch.dict(os.environ, {"ASTROAI_STUDIO_STATE": str(tmp_path)}),
-        mock.patch.object(proxy.subprocess, "Popen") as popen,
-    ):
-        result = proxy.run_cluster({"mode": "start"})
-    assert result["ok"] is True
-    assert Path(result["log"]).is_file()
-    assert result["log"].startswith(str(tmp_path))
-    assert popen.call_args[0][0] == ["/x/canfar-lab", "cluster", "start"]
-    assert popen.call_args.kwargs["start_new_session"] is True
+def test_binary_responses_stream_unchanged() -> None:
+    resp, data = _get(f"{P}/api/blob")
+    assert resp.status == 200 and len(data) == 450_000
+    assert resp.getheader("Content-Length") == "450000"
+    assert data == b'\x00"/api/x"' * 50_000  # never prefix-rewritten
 
 
-class _FakeProxyHandler:
-    """Enough of BaseHTTPRequestHandler for StudioProxyHandler._studio_sync."""
-
-    def __init__(
-        self,
-        *,
-        method: str = "GET",
-        headers: dict[str, str] | None = None,
-        client: tuple[str, int] = ("10.0.0.9", 1),
-        body: bytes = b"",
-    ) -> None:
-        self.command = method
-        self.headers = headers or {}
-        self.client_address = client
-        self.rfile = io.BytesIO(body)
-        self.wfile = io.BytesIO()
-        self.status: int | None = None
-
-    def send_response(self, status: int, message: str | None = None) -> None:
-        self.status = status
-
-    def send_header(self, key: str, value: str) -> None:
-        pass
-
-    def end_headers(self) -> None:
-        pass
-
-    def log_message(self, fmt: str, *args: object) -> None:
-        pass
-
-
-def test_studio_sync_handler_status_codes() -> None:
-    handler = proxy.StudioProxyHandler
-    # Unauthorized non-loopback GET carries no token → 403, no work done.
-    fake = _FakeProxyHandler()
-    with mock.patch.object(proxy, "run_sync_action") as run:
-        handler._studio_sync(fake, "/api/studio/sync")
-    assert fake.status == 403
-    run.assert_not_called()
-    # Token-authorized GET returns the dock state.
-    fake = _FakeProxyHandler(headers={"X-Desk-Token": proxy.DESK_TOKEN})
-    with (
-        mock.patch.object(proxy, "lab_version", return_value="0.7.0"),
-        mock.patch.object(proxy, "installed_dsh_version", return_value=None),
-        mock.patch.object(proxy, "run_sync_action") as run,
-    ):
-        handler._studio_sync(fake, "/api/studio/sync")
-    assert fake.status == 200
-    assert json.loads(fake.wfile.getvalue().decode("utf-8"))["mode"] == "session"
-    run.assert_not_called()
-    # Action outcomes map to status codes (busy, bad input, timeout, I/O).
-    def _post() -> _FakeProxyHandler:
-        return _FakeProxyHandler(
-            method="POST",
-            headers={"X-Desk-Token": proxy.DESK_TOKEN, "Content-Length": "0"},
-        )
-
-    for exc, want in (
-        (proxy.SyncBusy("busy"), 409),
-        (proxy.SyncUnavailable("no cli"), 503),
-        (ValueError("unknown sync action"), 400),
-        (proxy.subprocess.TimeoutExpired([], 300), 504),
-        (OSError("no such cwd"), 500),
-    ):
-        fake = _post()
-        with mock.patch.object(proxy, "run_sync_action", side_effect=exc):
-            handler._studio_sync(fake, "/api/studio/sync/sync_to_desktop")
-        assert fake.status == want, (exc, fake.status)
-    # Malformed JSON never reaches the action (it would drop dry_run).
-    body = b"{nope"
-    headers = {"X-Desk-Token": proxy.DESK_TOKEN, "Content-Length": str(len(body))}
-    fake = _FakeProxyHandler(method="POST", headers=headers, body=body)
-    with mock.patch.object(proxy, "run_sync_action") as run:
-        handler._studio_sync(fake, "/api/studio/sync/sync_to_desktop")
-    assert fake.status == 400
-    run.assert_not_called()
-    # Unsupported method still answers 405 instead of proxying to dsh.
-    fake = _FakeProxyHandler(
-        method="PUT", headers={"X-Desk-Token": proxy.DESK_TOKEN, "Content-Length": "0"}
-    )
-    handler._studio_sync(fake, "/api/studio/sync")
-    assert fake.status == 405
+def test_a_tool_that_keeps_failing_says_so_and_offers_retry() -> None:
+    state = Path(STATE_DIR) / "tool-state"
+    state.mkdir(parents=True, exist_ok=True)
+    marker = state / "terminal.failed"
+    marker.write_text("/scratch/.dsh-x/logs/terminal.log\n")
+    request = Path(STATE_DIR) / "tools" / "terminal"
+    request.unlink(missing_ok=True)
+    resp, data = _get(f"{P}/terminal/", {"Sec-Fetch-Dest": "document"})
+    assert resp.status == 503 and b"could not start" in data and b"terminal.log" in data
+    assert b"http-equiv='refresh'" not in data and not request.exists()
+    # A tab left open keeps polling: that must not restart a tool that gave up.
+    resp, _ = _get(f"{P}/terminal/api/poll", {"Sec-Fetch-Dest": "empty"})
+    assert resp.status == 503 and not request.exists() and marker.exists()
+    resp, data = _get(f"{P}/terminal/?astroai-retry=1", {"Sec-Fetch-Dest": "document"})
+    assert b"Opening Terminal" in data and not marker.exists() and request.exists()
+    (state / "terminal.started").write_text("")
+    _, data = _get(f"{P}/terminal/", {"Sec-Fetch-Dest": "document"})
+    assert b"first time" not in data  # it ran before: this is a restart
 
 
 if __name__ == "__main__":
-    import tempfile
-
-    test_keeps_bare_api_channel_string()
-    test_rewrites_quoted_api_slash_paths()
-    test_rewrites_quoted_assets()
-    test_injects_api_shim_and_chips()
-    test_rewrites_base_href_to_session_prefix()
-    test_rewrite_location_api()
-    test_upstream_path_strips_session_prefix()
-    test_no_prefix_leaves_absolute_paths()
-    test_is_websocket_request()
-    test_is_index_path()
-    test_starting_html_is_refreshable()
-    with tempfile.TemporaryDirectory() as td:
-        tok = Path(td) / "dsh-web-token"
-        tok.write_text("sekrit\n", encoding="utf-8")
-        proxy.TOKEN_FILE = str(tok)
-        proxy.PREFIX = "/session/contrib/abc"
-        assert proxy.index_token_redirect("/", None) == "/session/contrib/abc/?token=sekrit"
-        proxy.PREFIX = ""
-        assert proxy.index_token_redirect("/", None) == "/?token=sekrit"
-    test_vendored_desk_dock_asset_matches_its_lock()
-    test_desk_dock_starts_collapsed_by_default()
-    test_desk_dock_injected_when_enabled()
-    test_sync_authorized_token_or_loopback()
-    with tempfile.TemporaryDirectory() as td:
-        test_sync_state_reads_the_mailbox(Path(td))
-    test_run_desktop_sync_parses_cli_json()
-    test_run_desktop_sync_single_flight()
-    test_run_sync_action_rejects_unknown()
-    test_run_cluster_status_uses_cli()
-    with tempfile.TemporaryDirectory() as td:
-        test_run_cluster_start_detaches(Path(td))
-    test_studio_sync_handler_status_codes()
-    print("ok")
+    _serve(FakeDsh, DSH_PORT)
+    _serve(FakeLab, LAB_PORT)
+    srv = ThreadingHTTPServer(("127.0.0.1", PROXY_PORT), proxy.DshProxyHandler)
+    srv.daemon_threads = True
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    tests = [(n, f) for n, f in sorted(globals().items()) if n.startswith("test_") and callable(f)]
+    for name, fn in tests:
+        fn()
+        print(f"ok {name}")
+    print(f"{len(tests)} passed")

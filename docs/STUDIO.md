@@ -1,102 +1,76 @@
-# AstroAI Studio
+# CANFAR Studio
 
-Contributed session image `images.canfar.net/astroai/studio:<tag>` — unified 5-in-1 development studio (AI Coding Agents, Web Terminal, JupyterLab 4, Marimo, VS Code Web) for CANFAR.
+Contributed session image `images.canfar.net/astroai/studio:<tag>`: a coding
+agent chat, a terminal and notebooks in one CANFAR session, behind one tab strip.
 
-`improc-studio` and `specproc-studio` are the same image with `improc` or `specproc` as the parent. On those images the science venv is the default Jupyter kernel, and marimo runs inside that venv.
+`improc-studio` and `specproc-studio` are the same image on `improc` or
+`specproc`. There the science venv is the default Jupyter kernel and runs marimo.
 
-## Architecture
+## Tabs
 
-| Process | Bind | Role | Public Path |
-|---------|------|------|-------------|
-| `studio-canfar-proxy.py` | `0.0.0.0:5000` | Ingress multiplexer, WS splicer, Command Dock | `/` |
-| `dsh --profile astroai` | `127.0.0.1:3080` | Coding agent SPA (DeepSeek Harness) | `/` |
-| `ghostty-web` | `127.0.0.1:4793` | Browser terminal with tmux and bash | `/terminal/` |
-| `jupyter lab` | `127.0.0.1:8888` | JupyterLab 4 interactive notebooks | `/jupyter/` |
-| `marimo edit` | `127.0.0.1:2718` | Marimo reactive scientific notebooks | `/marimo/` |
-| `openvscode-server` | `127.0.0.1:8080` | OpenVSCode Server web IDE | `/vscode/` |
-| `agent-wizard.py` | `127.0.0.1:4792` | Compute hub (Ray clusters + batch jobs) | `/hub/` |
-| `canfar-lab sync watch` | poll | Desk mailbox doorbell: absorb desk requests, reply with events | — |
+| Tab | Process | Bind | Path | Starts |
+|-----|---------|------|------|--------|
+| Chat | `dsh --profile astroai` ([dsh](https://www.npmjs.com/package/@deepseek-ai/dsh)) | `127.0.0.1:3080` | `/` | at boot |
+| Terminal | ghostty-web + tmux | `127.0.0.1:4793` | `/terminal/` | at boot |
+| JupyterLab | `jupyter lab` | `127.0.0.1:8888` | `/jupyter/` | first open |
+| marimo | `marimo edit <code folder>` | `127.0.0.1:2718` | `/marimo/` | first open |
+| VS Code | OpenVSCode Server | `127.0.0.1:8080` | `/vscode/` | first open |
+| ⚙ Settings | `canfar lab web` | `127.0.0.1:4792` | `/lab/` | at boot |
 
-## Glassmorphism Command Dock
+`studio-canfar-proxy.py` on `:5000` serves them all under
+`/session/contrib/<id>`: it sends Skaha Connect to dsh's launch-token URL,
+rewrites dsh's absolute URLs, splices WebSockets, streams Server-Sent Events,
+adds the Settings bearer, and injects the tab strip (CANFAR logo, session
+name). Tabs and routes live in `config/studio-tabs.json`; adding a tool is one
+Dockerfile layer, one `_start_tool` case in `scripts/startup-studio.sh` and one
+line there.
 
-All web interfaces in Studio feature an injected, floating Glassmorphism Command Dock:
-- **One-click tool switching** between Agents, Terminal, JupyterLab, Marimo, and VS Code.
-- **Middle-click or Cmd/Ctrl-click** opens any tool in a new browser tab.
-- **Status Indicator**: Live pulsing dot reflects health of the underlying daemons.
-- **Toggle visibility**: `Cmd+K` / `Ctrl+K` or clicking the close toggle.
+A tool that keeps crashing on start shows "could not start" with its log path
+and a **Try again** link; background requests from an open tab never restart it.
 
-## Desk Sync
+## Settings tab
 
-The session runs `canfar-lab sync watch --session --interval 30` (started by
-`startup-studio.sh`, restarted by the supervision loop if it dies). It polls the
-shared mailbox at `~/.canfar/lab/sync` — a doorbell only; GitHub is the
-protocol — and answers desk requests by bootstrapping missing repos and
-fast-forwarding. Divergent or dirty trees stop with a report; nothing is ever
-stashed.
+New users get a short checklist: an API key for Chat (DeepSeek is the
+cheapest; OpenCode Zen, Gemini, OpenAI and Anthropic also work),
+optional agents (Claude Code, Codex, Antigravity, OpenCode, Pi, Oh My Pi), the
+code folder and automatic saves. Keys are kept in `~/.canfar/lab/.env` and in
+dsh's `~/.dsh/.credentials.yaml`, synced both ways; dsh's own Settings → Models
+edits the same keys.
 
-The dsh page also carries the **Desk dock** card (vendored from canfar-lab as
-`scripts/lib/astroai-dock.html`, drift-gated by `make desk-assets-check`):
+Agents live on `$SCRATCH` and are reinstalled at the latest version when a
+session starts. Code is in `$SCRATCH/src` by default (or a folder you pick);
+Settings snapshots it to `/arc` and brings the latest snapshot back into an
+empty scratch folder at the next start.
 
-- **Desktop sync** — commit + push this session's repos (secret-scan gated) and
-  drop the desk an event to pull.
-- **Launch cluster** — start the CANFAR Ray cluster (never a local one).
-- Chips show session status, the image dsh and canfar-lab versions, and the
-  last exchange time.
+## dsh
 
-`GET /api/studio/sync` serves the dock state; `POST /api/studio/sync/<action>`
-(`sync_to_desktop`, `cluster`) runs it. Both require the per-process bearer
-embedded in the injected page (or a loopback caller), and the exchange is
-single-flight. Protocol details: canfar-lab `docs/desk-sync.md`.
+Every image build installs the newest dsh release (highest semver across npm
+dist-tags, `scripts/dsh-newest.sh`). Startup runs
+`canfar-lab studio --prepare --profile canfar --no-install`, which sets up the
+`astroai` dsh profile: CANFAR brand plugin, MCP tools, the review-panel preset,
+a "Your code" workspace, and no telemetry export (`DSH_TELEMETRY_DISABLED=1`).
+The image patches dsh so it does not force DeepSeek-only onboarding.
 
-## Storage Isolation & Zero-Cache Hygiene
+## State and logs
 
-Studio strictly isolates runtime state on `/scratch`:
-- `${SCRATCH}/.studio-${USER}/logs/` — daemon logs (`dsh.log`, `ghostty.log`, `jupyter.log`, `marimo.log`, `vscode.log`, `wizard.log`).
-- `${SCRATCH}/.studio-${USER}/pnpm-store` / `pnpm-home` — isolated Node/pnpm package stores.
-- `${SCRATCH}/.studio-${USER}/jupyter-runtime` / `jupyter-data` — ephemeral Jupyter state.
-- `${SCRATCH}/.studio-${USER}/vscode-data` / `vscode-extensions` — VS Code runtime data.
-- Durable profiles and credentials remain safe on `/arc/home/${USER}` (`~/.dsh/`, `~/.canfar/`).
+Per session, on scratch: `$SCRATCH/.dsh-$USER/` (`logs/`, `tool-state/`, pnpm
+store, corepack, Jupyter runtime, VS Code data). Chat history follows the dsh state root on scratch and is carried by Settings
+snapshots. Durable: `~/.dsh` (profile, keys), `~/.canfar/lab` (keys, settings,
+snapshots), `~/.jupyter`.
 
-## Community Plugins
-
-Studio ships the dsh plugin market ([dshmarket](https://github.com/dsh-market/dsh-market), baked under `/opt/astroai/dsh-plugins`).
-
-- **Install:** Settings → Plugin Market → Discover → Install. Most plugins load live; the rest apply at the next session start.
-- **Switch off/on:** Settings → Plugin Market → Installed. Switches are kept when Studio regenerates the profile at startup.
-- **Restart:** the market's Restart button is disabled on CANFAR, because the session supervisor owns dsh. Start a new session to apply a change that needs a restart.
-- **Compatibility:** the market refuses plugins that declare a newer dsh than the CLI baked in the image. The image installs `@deepseek-ai/dsh@${DSH_VERSION}` (the same pin as canfar-lab) and the current dshmarket, and allows that CLI as a peer.
-- Installed plugins live in `~/.dsh/profiles/astroai` (durable). The image pins pnpm in a shared corepack home, so installs do not download pnpm into `$HOME`.
-
-## CLI Usage
-
-### From Laptop / Workstation
+## Build and test
 
 ```bash
-canfar create --name my-studio contributed images.canfar.net/astroai/studio:latest
-canfar session connect <id>     # opens port 5000 in browser
+make build-studio                 # resolves the newest dsh, then bakes
+make test-studio-local            # Connect, tabs, onboarding, save/restore
+python3 scripts/lib/test_studio_canfar_proxy.py
 ```
 
-Or run locally:
-```bash
-canfar lab studio               # cwd
-canfar lab studio /path/to/repo # explicit path
-canfar lab studio --doctor      # pre-flight verification
-```
+An unreleased canfar-lab: build a wheel into `../canfar-lab/dist`, then
+`docker buildx bake studio --set studio.contexts.canfar-lab-dist=../canfar-lab/dist`.
 
-### Inside Session
+## Launch
 
 ```bash
-canfar lab studio status        # inspect status of all 5 studio services
-canfar lab open jupyter [path]  # obtain/open direct browser link to notebook
-canfar lab open vscode [path]   # obtain/open direct browser link to file
-canfar lab open marimo [path]   # obtain/open direct browser link to reactive notebook
-```
-
-## Building on Cloud Linux VM (`seb`)
-
-```bash
-ssh seb
-cd ~/src/astroai/canfar-containers
-git pull
-docker buildx bake studio
+canfar create --name studio contributed images.canfar.net/astroai/studio:latest
 ```

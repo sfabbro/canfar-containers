@@ -43,7 +43,6 @@ flowchart LR
 | `specproc-terminal` | `…/astroai/specproc-terminal:<tag>` | Contributed | 5000 | Yes |
 | `marimo` | `…/astroai/marimo:<tag>` | Contributed | 5000 | Not in `build-all` |
 | `vscode` | `…/astroai/vscode:<tag>` | Contributed | 5000 | Not in `build-all` |
-| `dsh` | `…/astroai/dsh:<tag>` | Contributed | 5000 | Not in `build-all` (`make build-dsh`) |
 
 OCI label `io.canfar.skaha.session.type` marks `headless` / `contributed` / `notebook`.
 
@@ -51,7 +50,7 @@ Register **`ray-manager` only** for Ray. Workers stay headless. See [RAY.md](RAY
 Register **`improc-studio`** (Contributed, 5000) and optionally **`improc-terminal`** /
 **`improc-notebook`**. Leave **`improc`** headless for batch. Build/push:
 `make build-improc` / `make push-improc`. `terminal` / `notebook` (and science
-variants) are in `build-all`; `dsh`, `marimo`, and `vscode` stay outside that group.
+variants) are in `build-all`; `marimo` and `vscode` stay outside that group.
 Legacy Harbor names `webterm` / `improc-webterm` were renamed to `terminal` /
 `improc-terminal` — `scripts/harbor-cleanup.sh` still knows the old repos.
 
@@ -118,8 +117,7 @@ Session UIs listen at `/` on port **5000**.
 | `notebook` | Ingress keeps path; Jupyter `base_url=session/notebook/<id>`; `appName` = session name |
 | `openresearch` | Path-rewrite proxy on :5000 + HTML title stick; AstroAI pill (Terminal, hub, Compute); ghostty at `/astroai-terminal/` |
 | `openscience` | Loopback proxy on :5000 (bearer token, loopback Host/Origin, base path via `/__astroai/boot.js`); AstroAI pill (hub, Compute) at `/astroai-agents/` |
-| `studio`, `improc-studio`, `specproc-studio` | dsh `astroai` profile loopback + path-rewrite proxy on :5000 + HTML title stick |
-| `dsh` | dsh + Lab tab (`dsh-canfar-proxy.py`) on :5000; Terminal / Jupyter / VS Code on first open |
+| `studio`, `improc-studio`, `specproc-studio` | Tab-strip proxy (`studio-canfar-proxy.py`) on :5000: dsh Chat at `/`, Terminal, JupyterLab / marimo / VS Code (own base path, started on first open), Settings |
 | `ray-manager` | Server-rendered HTML `<title>` = session name |
 
 **Browser tab title:** Skaha sets the pod `hostname` to the session name (lowercase).
@@ -132,7 +130,7 @@ AstroAI images read it via `socket.gethostname()` (`scripts/lib/session_title.py
 | JupyterLab `page_config.json` `appName` | `notebook`, `improc-notebook` |
 | `astroai-html-proxy.py` | `marimo` |
 | `orx-canfar-proxy.py` / agent wizard / ghostty-web | `openresearch` |
-| `studio-canfar-proxy.py` / agent wizard | `studio`, `improc-studio`, `specproc-studio` |
+| `studio-canfar-proxy.py` (`ASTROAI_TAB_TITLE`) | `studio`, `improc-studio`, `specproc-studio` |
 | FastAPI HTML template | `ray-manager` |
 
 Platform stock sessions (**CARTA**, **Firefly**, **desktop**) use third-party
@@ -172,7 +170,7 @@ healthy Connect URL, and **scan session logs for fatals** (no `FATAL:`,
 tracebacks, OOM, or studio missing `dsh web token captured…`):
 
 ```bash
-make test-canfar-session IMAGE=studio TAG=$(date -u +%y.%m)   # or terminal / openresearch / dsh / …
+make test-canfar-session IMAGE=studio TAG=$(date -u +%y.%m)   # or terminal / openresearch / …
 ```
 
 Local docker smokes are not a substitute — they miss Skaha Connect URL,
@@ -191,7 +189,6 @@ flowchart TD
 TAG=$(date -u +%y.%m)
 make test-canfar-session IMAGE=terminal TAG=$TAG
 make test-canfar-session IMAGE=studio TAG=$TAG
-make test-canfar-session IMAGE=dsh TAG=$TAG
 make test-canfar-session IMAGE=vscode TAG=$TAG
 make test-canfar-session IMAGE=marimo TAG=$TAG
 make test-canfar-session IMAGE=notebook TAG=$TAG
@@ -204,23 +201,18 @@ make test-canfar-session IMAGE=openscience TAG=$TAG
 
 **OpenScience notes:** Built from the latest commit of `synthetic-sciences/openscience` (default branch) with `patches/openscience/*.patch`, so the web workspace works under the session path; re-check the patch applies when a build fails on `git apply`. The science venv (`config/science-py.txt`) adds the astropy-affiliated reduction, planning, cube, extinction and sampling packages. The wrapper points OpenScience's managed kernel environment (`<data>/conda/envs/python`) at that venv, with the micromamba binary it pins, so kernels get the astronomy stack instead of a ~2 GB conda download on `/arc`; packages the agent installs go to a per-project directory under the data dir. An environment a user already downloaded is left in place (delete `~/.openscience/conda` to switch), and `MICROMAMBA_*` in the Dockerfile must follow OpenScience's pin on bumps. Startup runs `canfar-lab agent setup openscience` (astroai MCP with CADC/VO tools, CANFAR instructions, astronomy skills under the `astronomy` category, an `astronomy` specialist agent, `/find-data`, `/save-results`, `/scale-out` and `/astro-check` commands, approval gates for cluster/job tools, sandbox off because the image has no bubblewrap). Agent and command files the user edits are kept on later setups. Setting `ASTROAI_LLM_BASE_URL` and `ASTROAI_LLM_MODELS` (comma-separated, optional `ASTROAI_LLM_API_KEY`) in the environment or `~/.astroai/lab/.env` adds an OpenAI-compatible `canfar` provider. Group skills are picked up from a trusted project's `.openscience/skills/`. Startup restarts the server when model keys are saved in the hub. `~/.openscience` is leased to one live session; a second concurrent session uses `$SCRATCH/.openscience`. Session state and logs: `$SCRATCH/.openscience-$USER/`.
 
-**Agent auto-setup:** UI kinds (`openresearch`, `vscode`, `studio`) default `ASTROAI_LAB_AGENT_SETUP=bg` when unset. **Marimo** stays opt-in for full setup (startup still runs `agent setup marimo` only). Terminal stays opt-in. Failures never block the main UI; see `~/.astroai/lab/agent-setup.log`.
+**Agent auto-setup:** UI kinds (`openresearch`, `vscode`) default `ASTROAI_LAB_AGENT_SETUP=bg` when unset. **Marimo** stays opt-in for full setup (startup still runs `agent setup marimo` only). Terminal stays opt-in. Failures never block the main UI; see `~/.astroai/lab/agent-setup.log`. Studio restores agents from its Settings tab instead.
 
-**Studio notes:** Image bakes `@deepseek-ai/dsh@${DSH_VERSION}` (the same pin as canfar-lab; `apps/cli/lib` is not in git) and the current dshmarket, plus pnpm (`PNPM_VERSION` in the Dockerfile).
-Startup runs sync `canfar-lab studio --prepare --profile canfar --no-install`,
-then `dsh --profile astroai` on loopback `:3080` and `studio-canfar-proxy.py`
-on `:5000`. pnpm/TMPDIR land on session scratch. See [STUDIO.md](STUDIO.md).
-pnpm (`PNPM_VERSION`) lives in `COREPACK_HOME=/opt/corepack` so every user
-runs the same major. `/opt/astroai/dsh-plugins` is a hoisted pnpm project
-of the current dshmarket; `--prepare` copies each dependency that declares a
-dsh bundle into the profile and enables it (override the directory with
-`ASTROAI_STUDIO_BAKED_PLUGINS`). On CANFAR the profile layer sets the
-market's `allowRestart: false`, since the startup supervisor restarts dsh.
-
-**dsh notes:** Successor workbench (`make build-dsh` / `test-dsh-local`); not in
-`build-all` until fully verified. Needs `canfar-lab` with `canfar lab web`.
-For an unreleased sibling checkout: build a wheel into `../canfar-lab/dist`,
-then bake with `--set dsh.contexts.canfar-lab-dist=../canfar-lab/dist`.
+**Studio notes:** every build installs the newest `@deepseek-ai/dsh` (highest
+semver across npm dist-tags, `scripts/dsh-newest.sh`; `make build-studio`
+passes it as `DSH_VERSION` so the layer cache follows releases). Startup runs
+`canfar-lab studio --prepare --profile canfar --no-install`, then dsh on
+loopback `:3080`, `canfar lab web` (Settings) on `:4792` and
+`studio-canfar-proxy.py` on `:5000`; JupyterLab, marimo and VS Code start the
+first time their tab is opened. State and logs: `$SCRATCH/.dsh-$USER/`. Needs
+`canfar-lab` with `canfar lab web`; for an unreleased sibling checkout build a
+wheel into `../canfar-lab/dist` and bake with
+`--set studio.contexts.canfar-lab-dist=../canfar-lab/dist`. See [STUDIO.md](STUDIO.md).
 
 **Home quota readings:** Prefer CephFS xattrs over raw `df` (`astroai` `disk_usage`). `ceph.dir.rbytes` can lag after writes — expected Ceph behavior. Base ships `getfattr`/`setfattr`, `getfacl`/`setfacl`, `dust`, `eza` (`-@` xattrs), `ncdu`, and `findmnt` for session-side probes (see USAGE Storage).
 

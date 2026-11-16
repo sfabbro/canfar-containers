@@ -1,406 +1,326 @@
 #!/bin/bash -e
-# AstroAI Studio: Unified 5-in-1 development studio for CANFAR.
-# Multiplexes DeepSeek Harness (:3080), Ghostty terminal (:4793),
-# JupyterLab (:8888), Marimo (:2718), OpenVSCode (:8080), and Compute Hub (:4792)
-# over public port 5000 via studio-canfar-proxy.py.
+# CANFAR Studio (astroai/studio): dsh (Chat tab), ghostty-web (Terminal tab),
+# JupyterLab, marimo and VS Code (started the first time their tab is opened) and
+# `canfar lab web` (Settings tab) behind studio-canfar-proxy.py on :5000.
+# Routes and tabs: /opt/astroai/studio/tabs.json.
 
 export ASTROAI_SESSION_KIND="${ASTROAI_SESSION_KIND:-studio}"
-export PATH="/opt/canfar/bin:/opt/openvscode-server/bin:/opt/astroai/bin:${PATH}"
-
-DSH_PORT="${DSH_PORT:-3080}"
-export DSH_PORT
+export PATH="/opt/canfar/bin:/opt/astroai/bin:${PATH}"
 export ASTROAI_STUDIO_PORT="${ASTROAI_STUDIO_PORT:-5000}"
-export ASTROAI_AGENT_WIZARD_PORT="${ASTROAI_AGENT_WIZARD_PORT:-4792}"
+export DSH_PORT="${DSH_PORT:-3080}"
+export CANFAR_LAB_WEB_PORT="${CANFAR_LAB_WEB_PORT:-4792}"
 export ASTROAI_TERMINAL_PORT="${ASTROAI_TERMINAL_PORT:-4793}"
 export ASTROAI_JUPYTER_PORT="${ASTROAI_JUPYTER_PORT:-8888}"
-export ASTROAI_MARIMO_PORT="${ASTROAI_MARIMO_PORT:-2718}"
 export ASTROAI_VSCODE_PORT="${ASTROAI_VSCODE_PORT:-8080}"
-export ASTROAI_TAB_TITLE="${ASTROAI_TAB_TITLE:-AstroAI Studio}"
+export ASTROAI_MARIMO_PORT="${ASTROAI_MARIMO_PORT:-2718}"
+export ASTROAI_TAB_TITLE="${ASTROAI_TAB_TITLE:-CANFAR Studio}"
 
-# Bind :5000 BEFORE common-init. On CANFAR, walking a large CephFS home in
-# common-init can exceed Skaha liveness (connection refused on :5000) and
-# crash-loop the pod before the proxy ever starts.
+# Per-session state on scratch (dies with the session; Settings snapshots carry it to /arc).
 _user="${USER:-${LOGNAME:-$(id -un 2>/dev/null || echo user)}}"
-if [[ -n "${SCRATCH:-}" && -d "${SCRATCH}" && -w "${SCRATCH}" ]]; then
-    _studio_state="${SCRATCH}/.studio-${_user}"
-elif [[ -d /scratch && -w /scratch ]]; then
-    _studio_state="/scratch/.studio-${_user}"
-else
-    _studio_state="${TMPDIR:-/tmp}/.studio-${_user}"
+for _root in "${SCRATCH:-}" /scratch "${TMPDIR:-/tmp}"; do
+    [[ -n "${_root}" && -d "${_root}" && -w "${_root}" ]] && break
+done
+_dsh_state="${_root}/.dsh-${_user}"
+mkdir -p "${_dsh_state}/logs" "${_dsh_state}/tmp" "${_dsh_state}/pnpm-store" "${_dsh_state}/pnpm-home" \
+    "${_dsh_state}/tools"
+# The proxy drops tools/<id> when a tab with "start" is first opened; the loop
+# below starts it. The Terminal is always on.
+touch "${_dsh_state}/tools/terminal"
+export ASTROAI_STUDIO_STATE="${_dsh_state}"
+export npm_config_store_dir="${_dsh_state}/pnpm-store" PNPM_HOME="${_dsh_state}/pnpm-home"
+export TMPDIR="${_dsh_state}/tmp"
+# The image's pnpm, in a writable copy: corepack downloads the pnpm a project
+# pins (packageManager) into COREPACK_HOME, and /opt/corepack is read-only.
+if [[ -d /opt/corepack && ! -d "${_dsh_state}/corepack" ]]; then
+    cp -a /opt/corepack "${_dsh_state}/corepack.tmp" 2>/dev/null \
+        && mv "${_dsh_state}/corepack.tmp" "${_dsh_state}/corepack"
 fi
-mkdir -p "${_studio_state}/pnpm-store" "${_studio_state}/pnpm-home" "${_studio_state}/tmp" \
-    "${_studio_state}/logs" "${_studio_state}/jupyter-runtime" "${_studio_state}/jupyter-data" \
-    "${_studio_state}/vscode-data" "${_studio_state}/vscode-extensions" \
-    "${HOME:-/tmp}/.canfar/lab" 2>/dev/null || mkdir -p "${_studio_state}"
-export ASTROAI_STUDIO_STATE="${_studio_state}"
-export ASTROAI_STUDIO_PROFILE=canfar
-export npm_config_store_dir="${_studio_state}/pnpm-store"
-export PNPM_HOME="${_studio_state}/pnpm-home"
-export TMPDIR="${_studio_state}/tmp"
-_dsh_log="${_studio_state}/logs/dsh.log"
-_token_file="${_studio_state}/dsh-web-token"
-: >"${_dsh_log}" 2>/dev/null || true
-rm -f "${_token_file}"
-export ASTROAI_DSH_TOKEN_FILE="${_token_file}"
+[[ -d "${_dsh_state}/corepack" ]] && export COREPACK_HOME="${_dsh_state}/corepack"
+export ASTROAI_DSH_TOKEN_FILE="${_dsh_state}/dsh-web-token"
+_dsh_log="${_dsh_state}/logs/dsh.log"
+_lab_log="${_dsh_state}/logs/lab-web.log"
+rm -f "${ASTROAI_DSH_TOKEN_FILE}"
+: >"${_dsh_log}"
 
-python3 /opt/astroai/lib/studio-canfar-proxy.py &
-PROXY_PID=$!
-echo "[astroai-boot] studio-proxy :${ASTROAI_STUDIO_PORT} pre-init (pid=${PROXY_PID})" >&2
+# One bearer per session, known to the proxy and `canfar lab web` only (dsh and
+# the tools start without it). It keeps other processes off :4792 directly; the
+# proxy on :5000 adds it to every /lab/ request it forwards.
+# Not exported: passed to those two only.
+_lab_token="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
 
-source /cadc/common-init.sh
-# shellcheck disable=SC1091
-source /opt/astroai/lib/skaha-proxy.sh
+# Bind :5000 before common-init: a slow /arc walk must not fail Skaha liveness.
+_start_proxy() {
+    CANFAR_LAB_WEB_TOKEN="${_lab_token}" python3 /opt/astroai/lib/studio-canfar-proxy.py >>"${_dsh_state}/logs/proxy.log" 2>&1 &
+    PROXY_PID=$!
+}
+_start_proxy
 
-# Default workspace: $SRCDIR (scratch src on CANFAR). dsh uses process.cwd()
-# as defaultCwd for new sessions — so we must cd here before boot.
-export SRCDIR="${SRCDIR:-${WORK:-${SCRATCH:-/scratch}/src}}"
-export WORK="${WORK:-${SRCDIR}}"
-STUDIO_CWD="${ASTROAI_STUDIO_CWD:-${SRCDIR}}"
-mkdir -p "${STUDIO_CWD}" "${HOME}/.dsh" "${HOME}/.canfar/lab"
-printf '%s\n' "${STUDIO_CWD}" >"${_studio_state}/studio-cwd"
-astroai_boot_log "studio cwd=${STUDIO_CWD} (SRCDIR=${SRCDIR})"
-_state="${HOME}/.canfar/lab"
-astroai_boot_log "studio-proxy :${ASTROAI_STUDIO_PORT} early (pid=${PROXY_PID})"
-
+declare -A TOOL_PID=() TOOL_STARTED=() TOOL_FAILS=()
 cleanup() {
-    local rc=$?
-    astroai_boot_log "session:exit rc=${rc}"
-    kill "${PROXY_PID:-}" "${WIZARD_PID:-}" "${GHOSTTY_PID:-}" "${DSH_PID:-}" \
-         "${JUPYTER_PID:-}" "${MARIMO_PID:-}" "${VSCODE_PID:-}" "${SYNC_WATCH_PID:-}" 2>/dev/null || true
-    wait "${PROXY_PID:-}" "${WIZARD_PID:-}" "${GHOSTTY_PID:-}" "${DSH_PID:-}" \
-         "${JUPYTER_PID:-}" "${MARIMO_PID:-}" "${VSCODE_PID:-}" "${SYNC_WATCH_PID:-}" 2>/dev/null || true
-}
-trap cleanup EXIT INT TERM
-
-# Resolve canfar-lab CLI (never legacy astroai)
-_LAB_BIN="canfar-lab"
-if ! command -v "${_LAB_BIN}" >/dev/null 2>&1; then
-    if [[ -x /opt/canfar/bin/canfar-lab ]]; then
-        _LAB_BIN="/opt/canfar/bin/canfar-lab"
-    fi
-fi
-
-# Prepare studio profile before services start
-if [[ -n "${_LAB_BIN}" ]] && command -v "${_LAB_BIN}" >/dev/null 2>&1; then
-    for _ in $(seq 1 180); do
-        if [[ ! -f "${_state}/agent-setup-pending" ]] \
-            && { [[ -f "${_state}/agent-setup-stamp" ]] || [[ -f "${_state}/agent-setup-failed" ]]; }; then
-            break
-        fi
-        if [[ ! -f "${_state}/agent-setup-pending" ]] \
-            && [[ ! -f "${_state}/agent-setup.lock" ]] \
-            && [[ "${_}" -gt 5 ]]; then
-            break
-        fi
-        sleep 1
+    astroai_boot_log "studio: session exit rc=$?" 2>/dev/null || true
+    # canfar lab web takes a last snapshot on TERM (bounded by CANFAR_LAB_EXIT_SAVE_SEC):
+    # signal it first, then the rest, then wait for all of them.
+    kill "${LAB_PID:-}" 2>/dev/null || true
+    local pid
+    for pid in "${TOOL_PID[@]}" "${DSH_PID:-}"; do
+        [[ -n "${pid}" ]] && { kill -- "-${pid}" 2>/dev/null || kill "${pid}" 2>/dev/null || true; }
     done
-    for _ in $(seq 1 60); do
-        [[ -f "${_state}/agent-setup.lock" ]] || break
-        sleep 1
-    done
-    if ! "${_LAB_BIN}" --yes studio --prepare --profile canfar --no-install \
-            >>"${_state}/studio-prepare.log" 2>&1; then
-        astroai_boot_log "WARN: ${_LAB_BIN} studio --prepare returned non-zero — check ${_state}/studio-prepare.log"
-    fi
-else
-    astroai_boot_log "INFO: canfar-lab CLI not pre-installed — proceeding with core services"
-fi
-
-if [[ -r "${HOME}/.canfar/lab/.env" ]]; then
-    set -a
-    # shellcheck disable=SC1091
-    source "${HOME}/.canfar/lab/.env"
-    set +a
-fi
-# dsh reads these from ~/.dsh/.credentials.yaml (synced by studio --prepare and
-# the Agents page). Inherited env would shadow that file: dsh then ignores key
-# changes and refuses edits in Settings → Models.
-_DSH_UNSET_ENV=(-u OPENCODE_API_KEY -u DEEPSEEK_API_KEY -u GEMINI_API_KEY
-    -u OPENAI_API_KEY -u ANTHROPIC_API_KEY)
-
-_DSH_TRUST=(
-    --trusted-host ws-uv.canfar.net
-    --trusted-host ws-uvic.canfar.net
-    --trusted-host staging.canfar.net
-    --trusted-host workloads.canfar.net
-    --trusted-host workload-uv.canfar.net
-)
-if [[ -n "${ASTROAI_STUDIO_TRUSTED_HOST:-}" ]]; then
-    # shellcheck disable=SC2206
-    for _h in ${ASTROAI_STUDIO_TRUSTED_HOST//,/ }; do
-        [[ -n "${_h}" ]] && _DSH_TRUST+=(--trusted-host "${_h}")
-    done
-fi
-_host="$(hostname -f 2>/dev/null || hostname 2>/dev/null || true)"
-if [[ -n "${_host}" ]]; then
-    _DSH_TRUST+=(--trusted-host "${_host}")
-fi
-
-cd "${STUDIO_CWD}"
-_dsh_home="${DSH_HOME:-${HOME}/.dsh}"
-mkdir -p "${_dsh_home}"
-# `canfar lab studio` inside the pod reads this file. The image argv above
-# already passes the same hosts to the supervised dsh.
-{
-    printf '%s\n' \
-        ws-uv.canfar.net \
-        ws-uvic.canfar.net \
-        staging.canfar.net \
-        workloads.canfar.net \
-        workload-uv.canfar.net
-    if [[ -n "${ASTROAI_STUDIO_TRUSTED_HOST:-}" ]]; then
-        # shellcheck disable=SC2086
-        printf '%s\n' ${ASTROAI_STUDIO_TRUSTED_HOST//,/ }
-    fi
-} >"${_dsh_home}/studio-trusted-hosts"
-
-_clear_stale_dsh_locks() {
-    local lock pid
-    shopt -s nullglob
-    for lock in "${_dsh_home}"/*.lock "${_dsh_home}"/.*.lock; do
-        [[ -f "${lock}" ]] || continue
-        pid="$(tr -dc '0-9' <"${lock}" 2>/dev/null | head -c 16 || true)"
-        if [[ -n "${pid}" ]] && kill -0 "${pid}" 2>/dev/null; then
-            continue
-        fi
-        rm -f "${lock}" && astroai_boot_log "removed stale dsh lock $(basename "${lock}")"
-    done
-    shopt -u nullglob
+    kill "${PROXY_PID:-}" 2>/dev/null || true
+    wait "${LAB_PID:-}" "${PROXY_PID:-}" "${DSH_PID:-}" "${TOOL_PID[@]}" 2>/dev/null || true
 }
+# Set before the slow boot steps so a stop is never ignored.
+trap cleanup EXIT
+trap 'exit 143' TERM  # exit runs the EXIT trap; returning would re-enter the loop
+trap 'exit 130' INT
 
-_start_sync_watch() {
-    # Session side of the Desk mailbox (docs/desk-sync.md §6.2): poll $HOME for
-    # desk requests, bootstrap/absorb ff-only, answer with events. GitHub is the
-    # protocol; this only rings the doorbell. /arc is a network FS → poll.
-    if [[ -z "${_LAB_BIN:-}" ]] || ! command -v "${_LAB_BIN}" >/dev/null 2>&1; then
-        return 0
+# shellcheck disable=SC1091
+source /cadc/common-init.sh
+astroai_boot_log "studio: proxy :${ASTROAI_STUDIO_PORT} pid=${PROXY_PID}, state=${_dsh_state}"
+
+# Code folder: chosen in Settings and kept in ~/.canfar/lab/workspace.json
+# ($SCRATCH/src until the user picks ~/src or their own folder).
+# Variables a new code or cache folder changes; cleared before re-exporting so
+# inherited values do not pin the old paths.
+_path_vars=(SRCDIR WORK CANFAR_LAB_RUNTIME_ROOT UV_CACHE_DIR PIP_CACHE_DIR NPM_CONFIG_CACHE
+    npm_config_cache PIXI_CACHE_DIR RATTLER_CACHE_DIR MAMBA_PKGS_DIRS CONDA_PKGS_DIRS
+    UV_PYTHON_INSTALL_DIR UV_TOOL_DIR PIXI_HOME MAMBA_ROOT_PREFIX HF_HOME TRANSFORMERS_CACHE
+    HF_DATASETS_CACHE TORCH_HOME MPLCONFIGDIR XDG_CACHE_HOME XDG_DATA_HOME XDG_STATE_HOME
+    PUPPETEER_CACHE_DIR CODEX_SQLITE_HOME HERMES_HOME)
+# The image's own PYTHONPATH: env export prepends the code folder's entries to
+# whatever it inherits, so start from the original on every (re)apply.
+_image_pythonpath="${PYTHONPATH:-}"
+_apply_paths() {
+    local code exports
+    code="$(env -u SRCDIR canfar-lab workspace path --ensure 2>>"${_dsh_state}/logs/paths.log")" || code=""
+    [[ -n "${code}" ]] || code="${SCRATCH:-/scratch}/src"
+    if ! mkdir -p "${code}" 2>/dev/null; then
+        astroai_boot_log "WARN: code folder ${code} is not writable; using ${_root}/src"
+        code="${_root}/src"
+        mkdir -p "${code}"
     fi
-    mkdir -p "${HOME}/.canfar/lab/sync"
-    "${_LAB_BIN}" sync watch --session --interval 30 \
-        >>"${_studio_state}/logs/sync-watch.log" 2>&1 &
-    SYNC_WATCH_PID=$!
-    astroai_boot_log "sync watcher started (pid=${SYNC_WATCH_PID}, mailbox=${HOME}/.canfar/lab/sync)"
+    exports="$(env "${_path_vars[@]/#/-u}" PYTHONPATH="${_image_pythonpath}" SRCDIR="${code}" \
+        canfar-lab env export --no-ensure 2>>"${_dsh_state}/logs/paths.log")" || exports=""
+    if [[ -n "${exports}" ]]; then
+        unset "${_path_vars[@]}"
+        eval "${exports}"
+    else  # keep the inherited cache paths rather than falling back to ~/.cache on /arc
+        astroai_boot_log "WARN: canfar-lab env export failed; see ${_dsh_state}/logs/paths.log"
+    fi
+    export SRCDIR="${code}" WORK="${code}" TMPDIR="${_dsh_state}/tmp"
+    # Tells Settings which folder the running tools use (to offer a restart).
+    printf '%s\n' "${code}" >"${_dsh_state}/live-code-dir"
+    mkdir -p "${SRCDIR}"
 }
+export CANFAR_LAB_LIVE_CODE_FILE="${_dsh_state}/live-code-dir"
+# Settings writes this file to restart the tools in a new code/cache folder.
+export CANFAR_LAB_RESTART_FILE="${_dsh_state}/restart-tools"
+rm -f "${CANFAR_LAB_RESTART_FILE}"
+_apply_paths
+mkdir -p "${HOME}/.dsh"
+astroai_boot_log "studio: code folder ${SRCDIR}"
 
-_dump_dsh_log() {
-    local reason="${1:-dsh.log}"
-    if [[ -s "${_dsh_log}" ]]; then
-        astroai_boot_log "${reason}:"
-        tail -n 60 "${_dsh_log}" | while IFS= read -r _line; do
-            astroai_boot_log "  ${_line}"
-        done
-    else
-        astroai_boot_log "${reason}: empty"
-    fi
-}
+# dsh profile `astroai`: MCP, presets and the vendored AstroAI plugins. No pnpm fetch.
+canfar-lab --yes studio --prepare --profile canfar --no-install --no-team \
+    >>"${_dsh_state}/logs/studio-prepare.log" 2>&1 \
+    || astroai_boot_log "WARN: studio --prepare failed, see ${_dsh_state}/logs/studio-prepare.log"
 
-_stop_dsh() {
-    if [[ -n "${DSH_PID:-}" ]] && kill -0 "${DSH_PID}" 2>/dev/null; then
-        kill "${DSH_PID}" 2>/dev/null || true
-        wait "${DSH_PID}" 2>/dev/null || true
-    fi
-    if command -v fuser >/dev/null 2>&1; then
-        fuser -k "${DSH_PORT}/tcp" 2>/dev/null || true
-    fi
-    DSH_PID=""
+_trust=()
+# shellcheck disable=SC2086  # split the comma list into words
+for _h in ws-uv.canfar.net ws-uvic.canfar.net staging.canfar.net workloads.canfar.net \
+    workload-uv.canfar.net ${ASTROAI_STUDIO_TRUSTED_HOST//,/ } "$(hostname -f 2>/dev/null || hostname)"; do
+    [[ -n "${_h}" ]] && _trust+=(--trusted-host "${_h}")
+done
+
+# Stop a process (its whole group when it leads one); KILL after $2 seconds.
+_stop_pid() {
+    local pid="$1" grace="${2:-10}" i
+    [[ -n "${pid}" ]] || return 0
+    kill -- "-${pid}" 2>/dev/null || kill "${pid}" 2>/dev/null || return 0
+    for (( i = 0; i < grace * 5; i++ )); do
+        kill -0 "${pid}" 2>/dev/null || { wait "${pid}" 2>/dev/null || true; return 0; }
+        sleep 0.2
+    done
+    kill -9 -- "-${pid}" 2>/dev/null || kill -9 "${pid}" 2>/dev/null || true
+    wait "${pid}" 2>/dev/null || true
 }
 
 _start_dsh() {
-    _stop_dsh
-    _clear_stale_dsh_locks
-    # Every dsh start mints a new launch token; the old one would 401 forever.
-    rm -f "${_token_file}"
-    _token_logged=""
-    astroai_boot_log "starting dsh --profile astroai on :${DSH_PORT}"
-    if command -v stdbuf >/dev/null 2>&1; then
-        env "${_DSH_UNSET_ENV[@]}" stdbuf -oL -eL dsh --profile astroai --no-open \
-            --port "${DSH_PORT}" "${_DSH_TRUST[@]}" >>"${_dsh_log}" 2>&1 &
-    else
-        env "${_DSH_UNSET_ENV[@]}" dsh --profile astroai --no-open --port "${DSH_PORT}" \
-            "${_DSH_TRUST[@]}" >>"${_dsh_log}" 2>&1 &
-    fi
+    # The old dsh must be gone first: it holds :${DSH_PORT}, and its token line
+    # in the log would otherwise be captured as the new one.
+    _stop_pid "${DSH_PID:-}" 10
+    : >"${_dsh_log}"
+    rm -f "${ASTROAI_DSH_TOKEN_FILE}"
+    # dsh reads keys from ~/.dsh/.credentials.yaml; inherited env would shadow it
+    # (the dsh routes in canfar-lab's support.yaml).
+    # DSH_TELEMETRY_DISABLED: no session-log export to DeepSeek on thumbs up/down.
+    # Own process group, so a stop also reaches the agents and MCP servers it runs.
+    (cd "${SRCDIR}" && exec setsid env -u OPENCODE_API_KEY -u DEEPSEEK_API_KEY \
+        -u GEMINI_API_KEY -u OPENAI_API_KEY -u ANTHROPIC_API_KEY DSH_TELEMETRY_DISABLED=1 \
+        dsh --profile astroai --no-open --port "${DSH_PORT}" "${_trust[@]}") \
+        >>"${_dsh_log}" 2>&1 &
     DSH_PID=$!
-    astroai_boot_log "dsh pid=${DSH_PID}"
+    _token_logged=""
+    _DSH_STARTED=${SECONDS}
+    astroai_boot_log "studio: dsh pid=${DSH_PID} on :${DSH_PORT}"
 }
 
-_extract_dsh_token() {
+# Settings tab. On the first start, --restore reinstalls last session's agents
+# and --restore-code brings the latest snapshot back into an empty scratch code
+# folder (per the user's "restore at start" setting); a restart after a crash
+# does neither. It also takes automatic snapshots and a last one on SIGTERM;
+# cleanup() waits for it.
+_LAB_RESTORE=(--restore --restore-code) _LAB_STARTED=0 _LAB_FAILS=0
+_start_lab() {
+    (cd "${SRCDIR}" && CANFAR_LAB_WEB_TOKEN="${_lab_token}" exec canfar-lab web --port "${CANFAR_LAB_WEB_PORT}" \
+        --token-file "${_dsh_state}/lab-web.token" "${_LAB_RESTORE[@]}") >>"${_lab_log}" 2>&1 &
+    LAB_PID=$!
+    _LAB_RESTORE=()
+    _LAB_STARTED=${SECONDS}
+    astroai_boot_log "studio: canfar lab web pid=${LAB_PID} on :${CANFAR_LAB_WEB_PORT}"
+}
+
+# On-demand tools. Each serves on loopback; the proxy routes its tab.
+_base="${skaha_sessionid:+/session/contrib/${skaha_sessionid}}"
+# Markers the proxy reads: <tab>.started (it ran once), <tab>.failed (gave up; holds the log path).
+_tool_state="${_dsh_state}/tool-state"
+mkdir -p "${_tool_state}"
+_DSH_STARTED=0 _DSH_FAILS=0
+_start_tool() {
+    local name="$1" log="${_dsh_state}/logs/$1.log"
+    case "${name}" in
+        terminal)
+            (cd "${SRCDIR}" && HOST=127.0.0.1 PORT="${ASTROAI_TERMINAL_PORT}" PWD="${SRCDIR}" \
+                ASTROAI_TAB_TITLE="${ASTROAI_TAB_TITLE}" exec setsid node /opt/ghostty-web/server.mjs) >>"${log}" 2>&1 &
+            ;;
+        jupyter)
+            # Image config comes from /etc/jupyter (system path); the user's own
+            # ~/.jupyter settings and workspaces carry over between sessions.
+            mkdir -p "${_dsh_state}/jupyter-runtime"
+            (cd "${SRCDIR}" && JUPYTER_RUNTIME_DIR="${_dsh_state}/jupyter-runtime" \
+                exec setsid jupyter lab --ip 127.0.0.1 \
+                --port "${ASTROAI_JUPYTER_PORT}" --no-browser --ServerApp.token='' \
+                --ServerApp.password='' --ServerApp.allow_remote_access=True \
+                --ServerApp.base_url="${_base}/jupyter/" --ServerApp.root_dir=/ \
+                --ServerApp.preferred_dir="${SRCDIR}" --ServerApp.log_level=WARN) >>"${log}" 2>&1 &
+            ;;
+        marimo)
+            # Notebooks in the code folder; marimo serves under its own base path.
+            (cd "${SRCDIR}" && exec setsid marimo --log-level warn edit --headless --no-token \
+                --skip-update-check --host 127.0.0.1 --port "${ASTROAI_MARIMO_PORT}" \
+                --base-url "${_base}/marimo" "${SRCDIR}") >>"${log}" 2>&1 &
+            ;;
+        vscode)
+            # Settings and extensions on scratch: fast, but fresh every session.
+            mkdir -p "${_dsh_state}/vscode-data/Machine" "${_dsh_state}/vscode-extensions"
+            cp -f /opt/openvscode-server/data/Machine/settings.json \
+                "${_dsh_state}/vscode-data/Machine/settings.json" 2>/dev/null || true
+            # The openvscode-server wrapper does not exec node: own group, so a stop reaches it.
+            setsid openvscode-server --host 127.0.0.1 --port "${ASTROAI_VSCODE_PORT}" \
+                --without-connection-token --server-base-path "${_base}/vscode" \
+                --user-data-dir "${_dsh_state}/vscode-data" \
+                --extensions-dir "${_dsh_state}/vscode-extensions" \
+                --default-folder "${SRCDIR}" >>"${log}" 2>&1 &
+            ;;
+        *) return 1 ;;
+    esac
+    TOOL_PID[${name}]=$!
+    TOOL_STARTED[${name}]=${SECONDS}
+    : >"${_tool_state}/${name}.started"
+    rm -f "${_tool_state}/${name}.failed"
+    astroai_boot_log "studio: ${name} pid=${TOOL_PID[${name}]}"
+}
+
+_supervise_tools() {
+    local req name pid
+    for req in "${_dsh_state}"/tools/*; do
+        [[ -e "${req}" ]] || continue
+        name="${req##*/}"
+        pid="${TOOL_PID[${name}]:-}"
+        if [[ -n "${pid}" ]] && kill -0 "${pid}" 2>/dev/null; then
+            # Up for a minute: earlier crashes no longer count toward giving up.
+            (( SECONDS - ${TOOL_STARTED[${name}]:-0} > 60 )) && TOOL_FAILS[${name}]=0
+            continue
+        fi
+        if [[ -n "${pid}" ]] && (( SECONDS - ${TOOL_STARTED[${name}]:-0} < 15 )); then
+            TOOL_FAILS[${name}]=$(( ${TOOL_FAILS[${name}]:-0} + 1 ))
+        fi
+        if (( ${TOOL_FAILS[${name}]:-0} >= 3 )); then
+            # Crashing on start: stop retrying until the tab is opened again.
+            astroai_boot_log "studio: ${name} keeps exiting, see ${_dsh_state}/logs/${name}.log"
+            # The tab shows "could not start" with the log, not an endless "starting".
+            printf '%s\n' "${_dsh_state}/logs/${name}.log" >"${_tool_state}/${name}.failed"
+            rm -f "${req}"
+            unset "TOOL_PID[${name}]"
+            TOOL_FAILS[${name}]=0
+            continue
+        fi
+        _start_tool "${name}" || rm -f "${req}"
+    done
+}
+
+_restart_tools() {
+    rm -f "${CANFAR_LAB_RESTART_FILE}"
+    _apply_paths
+    astroai_boot_log "studio: restarting tools in ${SRCDIR}"
+    local name
+    for name in "${!TOOL_PID[@]}"; do
+        _stop_pid "${TOOL_PID[${name}]}" 8
+        unset "TOOL_PID[${name}]"
+        TOOL_FAILS[${name}]=0
+    done
+    # Terminal shells live in a persistent tmux server: end it so new shells open
+    # in the new folder with the new environment.
+    tmux kill-server 2>/dev/null || true
+    _start_dsh  # kills the old dsh first; chats live in its state dir, not the cwd
+}
+
+_capture_dsh_token() {
     local tok
-    tok="$(
-        grep -aoE 'token[=:][A-Za-z0-9_-]+' "${_dsh_log}" 2>/dev/null \
-            | tail -1 | sed -E 's/^token[=:]//' || true
-    )"
-    if [[ -z "${tok}" ]]; then
-        tok="$(
-            sed -nE 's/.*[?&]token=([A-Za-z0-9_-]+).*/\1/p' "${_dsh_log}" 2>/dev/null \
-                | tail -1 || true
-        )"
-    fi
-    if [[ -n "${tok}" ]]; then
-        printf '%s\n' "${tok}" >"${_token_file}"
-        return 0
-    fi
-    return 1
+    tok="$(grep -aoE '[?&]token=[A-Za-z0-9_-]+' "${_dsh_log}" 2>/dev/null | tail -1 | cut -d= -f2-)"
+    [[ -n "${tok}" ]] || return 1
+    printf '%s\n' "${tok}" >"${ASTROAI_DSH_TOKEN_FILE}"
 }
 
-# 1. Start DSH (Coding agent)
 _start_dsh
+_start_lab
+astroai_boot_log "studio: services started, supervising"
 
-# 2. Start Ghostty-web terminal (navigation comes from the proxy's corner dock)
-_start_ghostty() {
-    HOST=127.0.0.1 PORT="${ASTROAI_TERMINAL_PORT}" \
-        ASTROAI_TAB_TITLE="${ASTROAI_TAB_TITLE:-AstroAI Studio}" \
-        PWD="${STUDIO_CWD}" \
-        node /opt/ghostty-web/server.mjs >>"${_studio_state}/logs/ghostty.log" 2>&1 &
-    GHOSTTY_PID=$!
-    astroai_boot_log "ghostty-web started on :${ASTROAI_TERMINAL_PORT} (pid=${GHOSTTY_PID})"
-}
-if [[ -f /opt/ghostty-web/server.mjs ]]; then
-    _start_ghostty
-fi
-
-# 3. Start JupyterLab (port 8888)
-_start_jupyter() {
-    if command -v jupyter >/dev/null 2>&1; then
-        export JUPYTER_CONFIG_DIR="${_studio_state}/jupyter-config"
-        export JUPYTER_RUNTIME_DIR="${_studio_state}/jupyter-runtime"
-        export JUPYTER_DATA_DIR="${_studio_state}/jupyter-data"
-        mkdir -p "${JUPYTER_CONFIG_DIR}" "${JUPYTER_RUNTIME_DIR}" "${JUPYTER_DATA_DIR}"
-        local _jbase=""
-        if [[ -n "${skaha_sessionid:-}" ]]; then
-            _jbase="/session/contrib/${skaha_sessionid}/jupyter/"
-        else
-            _jbase="/jupyter/"
-        fi
-        local _jlog="${_studio_state}/logs/jupyter.log"
-        astroai_boot_log "starting jupyter lab on :${ASTROAI_JUPYTER_PORT} (base_url=${_jbase})"
-        jupyter lab \
-            --ip 127.0.0.1 \
-            --port "${ASTROAI_JUPYTER_PORT}" \
-            --no-browser \
-            --config /etc/jupyter/jupyter_server_config.py \
-            --ServerApp.token='' \
-            --ServerApp.password='' \
-            --ServerApp.allow_remote_access=True \
-            --ServerApp.base_url="${_jbase}" \
-            --ServerApp.root_dir=/ \
-            --ServerApp.preferred_dir="${STUDIO_CWD}" \
-            --ServerApp.log_level=WARN \
-            >>"${_jlog}" 2>&1 &
-        JUPYTER_PID=$!
-    fi
-}
-_start_jupyter
-
-# 4. Start Marimo (port 2718)
-_start_marimo() {
-    if command -v marimo >/dev/null 2>&1; then
-        local _mbase=""
-        if [[ -n "${skaha_sessionid:-}" ]]; then
-            _mbase="/session/contrib/${skaha_sessionid}/marimo"
-        else
-            _mbase="/marimo"
-        fi
-        local _mlog="${_studio_state}/logs/marimo.log"
-        local _nbdir="${STUDIO_CWD}/notebooks"
-        mkdir -p "${_nbdir}"
-        if [[ -f "/opt/astroai/notebooks/starter.py" && ! -e "${_nbdir}/starter.py" ]]; then
-            cp "/opt/astroai/notebooks/starter.py" "${_nbdir}/starter.py" 2>/dev/null || true
-        fi
-        # marimo's file browser is confined to _nbdir; these reach the rest.
-        ln -sfn "${SCRATCH:-/scratch}" "${_nbdir}/📁_scratch" 2>/dev/null || true
-        ln -sfn "${STUDIO_CWD}" "${_nbdir}/📁_work" 2>/dev/null || true
-        ln -sfn /arc "${_nbdir}/📁_arc" 2>/dev/null || true
-        astroai_boot_log "starting marimo on :${ASTROAI_MARIMO_PORT} (base_url=${_mbase})"
-        marimo --log-level warn edit \
-            --no-token \
-            --port "${ASTROAI_MARIMO_PORT}" \
-            --host 127.0.0.1 \
-            --skip-update-check \
-            --headless \
-            --base-url "${_mbase}" \
-            "${_nbdir}" >>"${_mlog}" 2>&1 &
-        MARIMO_PID=$!
-    fi
-}
-_start_marimo
-
-# 5. Start OpenVSCode Server (port 8080)
-_start_vscode() {
-    if [[ -x /opt/openvscode-server/bin/openvscode-server ]]; then
-        local _vbase=""
-        if [[ -n "${skaha_sessionid:-}" ]]; then
-            _vbase="/session/contrib/${skaha_sessionid}/vscode"
-        else
-            _vbase="/vscode"
-        fi
-        local _vlog="${_studio_state}/logs/vscode.log"
-        # Machine settings are read from <user-data-dir>/Machine, not the install dir.
-        mkdir -p "${_studio_state}/vscode-data/Machine"
-        cp -f /opt/openvscode-server/data/Machine/settings.json \
-            "${_studio_state}/vscode-data/Machine/settings.json" 2>/dev/null || true
-        astroai_boot_log "starting openvscode-server on :${ASTROAI_VSCODE_PORT} (base_path=${_vbase})"
-        /opt/openvscode-server/bin/openvscode-server \
-            --host 127.0.0.1 \
-            --port "${ASTROAI_VSCODE_PORT}" \
-            --without-connection-token \
-            --server-base-path "${_vbase}" \
-            --user-data-dir "${_studio_state}/vscode-data" \
-            --extensions-dir "${_studio_state}/vscode-extensions" \
-            --default-folder "${STUDIO_CWD}" \
-            >>"${_vlog}" 2>&1 &
-        VSCODE_PID=$!
-    fi
-}
-_start_vscode
-
-# 6. Compute & Agent Wizard Hub (port 4792)
-if [[ -f /opt/astroai/lib/agent-wizard.py ]]; then
-    python3 /opt/astroai/lib/agent-wizard.py >>"${_studio_state}/logs/wizard.log" 2>&1 &
-    WIZARD_PID=$!
-fi
-
-astroai_boot_log "studio 5-in-1 workbench ready, entering supervision loop"
-_start_sync_watch
-
-# Supervise forever: ensure all services stay alive
+# A supervisor must not exit on one failed command.
+set +e
 while true; do
-    if ! kill -0 "${PROXY_PID}" 2>/dev/null; then
-        astroai_boot_log "studio-proxy died — restarting"
-        python3 /opt/astroai/lib/studio-canfar-proxy.py &
-        PROXY_PID=$!
-    fi
+    kill -0 "${PROXY_PID}" 2>/dev/null || { astroai_boot_log "studio: proxy died, restarting"; _start_proxy; }
     if ! kill -0 "${DSH_PID}" 2>/dev/null; then
-        astroai_boot_log "dsh died — restarting"
-        _dump_dsh_log "dsh.log"
-        _start_dsh
+        (( SECONDS - _DSH_STARTED < 20 )) && _DSH_FAILS=$(( _DSH_FAILS + 1 ))
+        if (( _DSH_FAILS >= 3 )) && [[ ! -e "${_tool_state}/agent.failed" ]]; then
+            astroai_boot_log "studio: dsh keeps exiting, see ${_dsh_log}; retrying every 30s"
+            cp -f "${_dsh_log}" "${_dsh_state}/logs/dsh-failed.log" 2>/dev/null || true
+            printf '%s\n' "${_dsh_state}/logs/dsh-failed.log" >"${_tool_state}/agent.failed"
+        fi
+        # Back off once it is failing; the Chat tab's "Try again" clears the marker.
+        if [[ ! -e "${_tool_state}/agent.failed" ]] || (( SECONDS - _DSH_STARTED >= 30 )); then
+            astroai_boot_log "studio: dsh died, restarting (tail ${_dsh_log})"
+            tail -n 20 "${_dsh_log}" | sed 's/^/  dsh: /' >&2 || true
+            _start_dsh
+        fi
     fi
-    if [[ -n "${GHOSTTY_PID:-}" ]] && ! kill -0 "${GHOSTTY_PID}" 2>/dev/null; then
-        astroai_boot_log "ghostty-web died — restarting"
-        _start_ghostty
+    if ! kill -0 "${LAB_PID}" 2>/dev/null; then
+        (( SECONDS - _LAB_STARTED < 20 )) && _LAB_FAILS=$(( _LAB_FAILS + 1 ))
+        # Crashing on start: retry every 30 s instead of every 2 s.
+        if (( _LAB_FAILS < 3 || SECONDS - _LAB_STARTED >= 30 )); then
+            astroai_boot_log "studio: Settings (canfar lab web) died, restarting; see ${_lab_log}"
+            _start_lab
+        fi
+    elif (( SECONDS - _LAB_STARTED > 60 )); then
+        _LAB_FAILS=0
     fi
-    if [[ -n "${JUPYTER_PID:-}" ]] && ! kill -0 "${JUPYTER_PID}" 2>/dev/null; then
-        astroai_boot_log "jupyter died — restarting"
-        _start_jupyter
-    fi
-    if [[ -n "${MARIMO_PID:-}" ]] && ! kill -0 "${MARIMO_PID}" 2>/dev/null; then
-        astroai_boot_log "marimo died — restarting"
-        _start_marimo
-    fi
-    if [[ -n "${VSCODE_PID:-}" ]] && ! kill -0 "${VSCODE_PID}" 2>/dev/null; then
-        astroai_boot_log "vscode died — restarting"
-        _start_vscode
-    fi
-    if [[ -n "${WIZARD_PID:-}" ]] && ! kill -0 "${WIZARD_PID}" 2>/dev/null; then
-        python3 /opt/astroai/lib/agent-wizard.py >>"${_studio_state}/logs/wizard.log" 2>&1 &
-        WIZARD_PID=$!
-    fi
-    if [[ -n "${SYNC_WATCH_PID:-}" ]] && ! kill -0 "${SYNC_WATCH_PID}" 2>/dev/null; then
-        astroai_boot_log "sync watcher died — restarting"
-        _start_sync_watch
-    fi
-    if _extract_dsh_token && [[ -z "${_token_logged:-}" ]]; then
+    [[ -e "${CANFAR_LAB_RESTART_FILE}" ]] && _restart_tools
+    _supervise_tools
+    if [[ -z "${_token_logged}" ]] && _capture_dsh_token; then
         astroai_boot_log "dsh web token captured for Skaha Connect redirect"
         _token_logged=1
+        _DSH_FAILS=0
+        rm -f "${_tool_state}/agent.failed"
+        : >"${_tool_state}/agent.started"
     fi
-    sleep 2
+    sleep 2 & wait $!  # a foreground sleep would delay the TERM trap
 done

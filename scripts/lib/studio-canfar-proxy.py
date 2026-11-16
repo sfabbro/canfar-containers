@@ -1,21 +1,34 @@
-"""Reverse-proxy and multi-service ingress for CANFAR contributed Studio sessions.
+"""Public :5000 proxy for astroai/studio sessions on CANFAR.
 
-Multiplexes the unified 5-in-1 workbench over port 5000:
-  * ``/`` → DeepSeek Harness agent SPA (127.0.0.1:DSH_PORT, default 3080)
-  * ``/terminal/*`` & ``/astroai-terminal/*`` → ghostty-web terminal (127.0.0.1:TERMINAL_PORT, default 4793)
-  * ``/jupyter/*`` → JupyterLab 4 (127.0.0.1:JUPYTER_PORT, default 8888)
-  * ``/marimo/*`` → Marimo reactive notebooks (127.0.0.1:MARIMO_PORT, default 2718)
-  * ``/vscode/*`` → OpenVSCode Server (127.0.0.1:VSCODE_PORT, default 8080)
-  * ``/hub/*`` & ``/astroai-agents/*`` → Compute & Agent Wizard hub (127.0.0.1:WIZARD_PORT, default 4792)
-  * ``/api/studio/status`` → Real-time JSON health and system metrics
-  * ``/api/studio/sync`` → Desk dock state (GET) and Desktop sync / cluster actions (POST)
+Routes come from a tab table (``/opt/astroai/studio/tabs.json``, override with
+``ASTROAI_TABS_FILE``). Each tab is ``{id, label, prefix, port}`` plus optional
+keys; the ``/`` tab is dsh, everything else is matched by path prefix:
 
-Features:
-  * Early 0.0.0.0:5000 bind with instant 200 splash page (prevents Skaha liveness crash-loops)
-  * Transparent bi-directional WebSocket splicing across all subservices
-  * Injects modern Glassmorphism Command Dock into served HTML pages
-  * Dynamic path rewriting and dsh /api fetch/WebSocket shim for /session/contrib/<id>
-  * Zero external dependencies (Python standard library only)
+* ``strip``      (default true)  drop the tab prefix before forwarding and send
+                                 ``X-Forwarded-Prefix``. Set false for tools that
+                                 serve under their own base path (Jupyter, VS Code).
+* ``bearer_env`` env var whose value is sent as ``Authorization: Bearer`` (Lab).
+* ``badge``      path under the tab polled by the tab strip; a JSON
+                 ``{"pending": n, "ready": bool, "kind": ...}`` puts a count on the tab.
+* ``port_env``   env var that overrides ``port``.
+* ``start``      (default false) start the tool the first time its tab is opened:
+                 the proxy drops ``$ASTROAI_STUDIO_STATE/tools/<id>`` and
+                 startup-studio.sh's supervisor starts (and keeps) it.
+* ``align``      ``"end"`` puts the tab at the right end of the strip.
+* ``layout``     ``"contain"``: fixed toolbars at top:0 go below the strip
+                 (marimo); ``"viewport"``: shrink ``window.innerHeight`` for apps
+                 that size from it (VS Code).
+* ``patch``      ``"vscode"``: apply the image's VS Code machine settings as
+                 embedder defaults, so workspace trust stays off (VS Code for
+                 the Web keeps user settings in the browser).
+
+Adding a tool later is one Dockerfile layer plus one line in tabs.json.
+
+The proxy also: binds :5000 before the session is ready (Skaha liveness),
+sends Connect to dsh's launch-token URL, rewrites dsh's absolute URLs under
+``/session/contrib/<id>`` with a fetch/WebSocket/EventSource shim, splices
+WebSockets, streams Server-Sent Events, injects the tab strip into HTML, and
+answers ``/api/studio/status`` for the image healthcheck. Stdlib only.
 """
 
 from __future__ import annotations
@@ -25,16 +38,9 @@ import html
 import json
 import os
 import re
-import secrets
 import select
-import shutil
 import socket
-import subprocess
 import sys
-import threading
-import time
-from collections.abc import Callable
-from datetime import datetime, timezone
 from http.client import HTTPConnection
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -47,40 +53,271 @@ if str(_LIB) not in sys.path:
 from session_title import stick_html_title  # noqa: E402
 
 PUBLIC_PORT = int(os.environ.get("ASTROAI_STUDIO_PORT", "5000"))
-DSH_HOST = os.environ.get("DSH_HOST", "127.0.0.1")
-DSH_PORT = int(os.environ.get("DSH_PORT", "3080"))
-WIZARD_HOST = os.environ.get("ASTROAI_AGENT_WIZARD_HOST", "127.0.0.1")
-WIZARD_PORT = int(os.environ.get("ASTROAI_AGENT_WIZARD_PORT", "4792"))
-TERMINAL_HOST = os.environ.get("ASTROAI_TERMINAL_HOST", "127.0.0.1")
-TERMINAL_PORT = int(os.environ.get("ASTROAI_TERMINAL_PORT", "4793"))
-JUPYTER_HOST = os.environ.get("ASTROAI_JUPYTER_HOST", "127.0.0.1")
-JUPYTER_PORT = int(os.environ.get("ASTROAI_JUPYTER_PORT", "8888"))
-MARIMO_HOST = os.environ.get("ASTROAI_MARIMO_HOST", "127.0.0.1")
-MARIMO_PORT = int(os.environ.get("ASTROAI_MARIMO_PORT", "2718"))
-VSCODE_HOST = os.environ.get("ASTROAI_VSCODE_HOST", "127.0.0.1")
-VSCODE_PORT = int(os.environ.get("ASTROAI_VSCODE_PORT", "8080"))
-VSCODE_SETTINGS = os.environ.get(
-    "ASTROAI_VSCODE_SETTINGS", "/opt/openvscode-server/data/Machine/settings.json"
-)
-
+UPSTREAM_HOST = "127.0.0.1"
 SESSION_ID = (os.environ.get("skaha_sessionid") or "").strip()  # noqa: SIM112
 PREFIX = f"/session/contrib/{SESSION_ID}" if SESSION_ID else ""
-WIZARD_MOUNT = "/astroai-agents"
-TERMINAL_MOUNT = "/astroai-terminal"
+TABS_FILE = os.environ.get("ASTROAI_TABS_FILE", "/opt/astroai/studio/tabs.json")
 COOKIE_PREFIX = "dsh-auth-"
-BRAND_TITLE = "AstroAI Studio"
-PROXY_REVISION = "16"
+BRAND_TITLE = os.environ.get("ASTROAI_TAB_TITLE", "CANFAR Studio")
+#: Square logo shown at the left of the tab strip (no text brand when present).
+LOGO_FILE = os.environ.get("ASTROAI_TAB_LOGO", "/opt/astroai/studio/logo.png")
+ASSET_ROUTE = "/__dsh/tabs.js"
+LOGO_ROUTE = "/__dsh/logo.png"
+STATUS_ROUTE = "/api/studio/status"
+
+DEFAULT_TABS: list[dict[str, Any]] = [
+    {"id": "agent", "label": "Chat", "prefix": "/", "port": 3080, "port_env": "DSH_PORT"},
+    {
+        "id": "lab",
+        "label": "Settings",
+        "icon": "gear",
+        "align": "end",
+        "prefix": "/lab",
+        "port": 4792,
+        "port_env": "CANFAR_LAB_WEB_PORT",
+        "bearer_env": "CANFAR_LAB_WEB_TOKEN",
+        "badge": "api/onboarding",
+    },
+]
 
 
-def _token_file_path() -> str:
-    explicit = os.environ.get("ASTROAI_DSH_TOKEN_FILE", "").strip()
-    if explicit:
-        return explicit
-    state = os.environ.get("ASTROAI_STUDIO_STATE", "").strip().rstrip("/")
-    return f"{state}/dsh-web-token" if state else ""
+# ---------------------------------------------------------------------------
+# Tab table
+# ---------------------------------------------------------------------------
 
 
-TOKEN_FILE = _token_file_path()
+#: Icons a tab may show instead of its label text (the label stays as the
+#: accessible name and tooltip). Inline SVG paths, 24x24, currentColor.
+ICONS = {
+    "gear": (
+        "M19.14 12.94c.04-.31.06-.62.06-.94s-.02-.63-.06-.94l2.03-1.58a.5.5 0 0 0 .12-.64"
+        "l-1.92-3.32a.5.5 0 0 0-.61-.22l-2.39.96a7.03 7.03 0 0 0-1.62-.94l-.36-2.54A.5.5 0 0 0"
+        " 13.9 2h-3.84a.5.5 0 0 0-.49.42l-.36 2.54c-.59.24-1.13.56-1.62.94l-2.39-.96a.5.5 0 0 0"
+        "-.61.22L2.67 8.48a.5.5 0 0 0 .12.64l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94"
+        "l-2.03 1.58a.5.5 0 0 0-.12.64l1.92 3.32c.13.22.39.3.61.22l2.39-.96c.5.38 1.03.7 1.62"
+        ".94l.36 2.54c.05.24.25.42.49.42h3.84c.24 0 .44-.18.49-.42l.36-2.54c.59-.24 1.13-.56"
+        " 1.62-.94l2.39.96c.22.08.48 0 .61-.22l1.92-3.32a.5.5 0 0 0-.12-.64l-2.03-1.58Z"
+        "M12 15.6a3.6 3.6 0 1 1 0-7.2 3.6 3.6 0 0 1 0 7.2Z"
+    ),
+}
+
+
+def _clean_tab(raw: Any) -> dict[str, Any] | None:
+    if not isinstance(raw, dict):
+        return None
+    prefix = str(raw.get("prefix") or "").rstrip("/") or "/"
+    if not re.fullmatch(r"/[A-Za-z0-9_.-]*", prefix):
+        return None
+    try:
+        port = int(raw.get("port_env") and os.environ.get(raw["port_env"]) or raw["port"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    tab_id = str(raw.get("id") or prefix.strip("/") or "root")
+    return {
+        "id": tab_id,
+        "label": str(raw.get("label") or tab_id),
+        "prefix": prefix,
+        "port": port,
+        "strip": bool(raw.get("strip", True)),
+        "bearer_env": str(raw.get("bearer_env") or ""),
+        "badge": str(raw.get("badge") or "").lstrip("/"),
+        "start": bool(raw.get("start")),
+        "align": "end" if raw.get("align") == "end" else "",
+        "patch": str(raw.get("patch") or ""),
+        "layout": str(raw.get("layout") or ""),
+        "icon": raw["icon"] if isinstance(raw.get("icon"), str) and raw["icon"] in ICONS else "",
+    }
+
+
+def load_tabs(path: str = TABS_FILE) -> list[dict[str, Any]]:
+    """Tabs in display order. Falls back to Chat + Settings when the file is unusable."""
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+        rows = data.get("tabs") if isinstance(data, dict) else data
+    except (OSError, ValueError):
+        rows = None
+    tabs = [t for t in (_clean_tab(r) for r in rows or []) if t]
+    if not any(t["prefix"] == "/" for t in tabs):
+        tabs = [t for t in (_clean_tab(r) for r in DEFAULT_TABS) if t]
+    return tabs
+
+
+TABS = load_tabs()
+
+
+def match_tab(route: str, tabs: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    """Longest prefix wins; the ``/`` tab (dsh) catches everything else."""
+    tabs = TABS if tabs is None else tabs
+    best = next(t for t in tabs if t["prefix"] == "/")
+    for tab in tabs:
+        p = tab["prefix"]
+        if p != "/" and (route == p or route.startswith(p + "/")) and len(p) > len(best["prefix"]):
+            best = tab
+    return best
+
+
+def request_start(tab: dict[str, Any]) -> bool:
+    """Ask startup-studio.sh to start *tab*'s tool; False when there is no supervisor."""
+    state = os.environ.get("ASTROAI_STUDIO_STATE", "").strip()
+    if not state or not tab["start"] or not re.fullmatch(r"[a-z0-9-]+", tab["id"]):
+        return False
+    try:
+        tools = Path(state) / "tools"
+        tools.mkdir(parents=True, exist_ok=True)
+        (tools / tab["id"]).touch()
+    except OSError:
+        return False
+    return True
+
+
+def _tool_marker(tab: dict[str, Any], kind: str) -> Path | None:
+    state = os.environ.get("ASTROAI_STUDIO_STATE", "").strip()
+    if not state or not re.fullmatch(r"[a-z0-9-]+", tab["id"]):
+        return None
+    return Path(state) / "tool-state" / f"{tab['id']}.{kind}"
+
+
+def tool_failed_log(tab: dict[str, Any]) -> str | None:
+    """The log path when startup-studio.sh gave up starting *tab*'s tool."""
+    marker = _tool_marker(tab, "failed")
+    try:
+        return marker.read_text(encoding="utf-8").strip() or "(no log)" if marker else None
+    except OSError:
+        return None
+
+
+def clear_tool_failure(tab: dict[str, Any]) -> None:
+    marker = _tool_marker(tab, "failed")
+    if marker:
+        with contextlib.suppress(OSError):
+            marker.unlink()
+
+
+def tool_ran_before(tab: dict[str, Any]) -> bool:
+    marker = _tool_marker(tab, "started")
+    return bool(marker and marker.exists())
+
+
+def tab_href(tab: dict[str, Any]) -> str:
+    return f"{PREFIX}/" if tab["prefix"] == "/" else f"{PREFIX}{tab['prefix']}/"
+
+
+# ---------------------------------------------------------------------------
+# dsh launch token (Connect)
+# ---------------------------------------------------------------------------
+
+
+def read_launch_token() -> str | None:
+    """dsh's launch token, captured from its boot log by startup-studio.sh."""
+    path = os.environ.get("ASTROAI_DSH_TOKEN_FILE", "").strip()
+    if not path:
+        return None
+    try:
+        return Path(path).read_text(encoding="utf-8").strip() or None
+    except OSError:
+        return None
+
+
+def has_dsh_auth_cookie(cookie_header: str | None) -> bool:
+    return any(p.strip().startswith(COOKIE_PREFIX) for p in (cookie_header or "").split(";"))
+
+
+def expire_dsh_auth_cookies(cookie_header: str | None) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for part in (cookie_header or "").split(";"):
+        name = part.strip().split("=", 1)[0].strip()
+        if name.startswith(COOKIE_PREFIX) and name not in seen:
+            seen.add(name)
+            out.append(f"{name}=; Max-Age=0; Path=/")
+            if PREFIX:
+                out.append(f"{name}=; Max-Age=0; Path={PREFIX}/")
+    return out
+
+
+ONBOARDED_COOKIE = "astroai-onboarded"
+
+
+def onboarding_redirect(handler: BaseHTTPRequestHandler) -> tuple[str | None, bool]:
+    """First Agent page a browser loads in a brand-new session: go to the checklist.
+
+    Returns (location, remember). Asks the badge tab (the Lab) once; *remember*
+    means set a cookie so later loads skip the check. When the Lab is not up
+    yet, neither: the next load asks again and the badge still shows.
+    """
+    cookies = handler.headers.get("Cookie") or ""
+    if any(p.strip().startswith(ONBOARDED_COOKIE + "=") for p in cookies.split(";")):
+        return None, False
+    tab = next((t for t in TABS if t["badge"] and t["prefix"] != "/"), None)
+    if tab is None:
+        return None, False
+    headers = {"Accept": "application/json"}
+    token = os.environ.get(tab["bearer_env"], "").strip() if tab["bearer_env"] else ""
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    path = f"/{tab['badge']}" if tab["strip"] else f"{PREFIX}{tab['prefix']}/{tab['badge']}"
+    conn = HTTPConnection(UPSTREAM_HOST, tab["port"], timeout=4)
+    try:
+        conn.request("GET", path, headers=headers)
+        resp = conn.getresponse()
+        data = json.loads(resp.read()) if resp.status == 200 else None
+    except (OSError, ValueError):
+        return None, False
+    finally:
+        conn.close()
+    if not isinstance(data, dict):
+        return None, False
+    if data.get("kind") == "new" and not data.get("ready"):
+        return tab_href(tab), True
+    return None, True
+
+
+def onboarded_cookie() -> str:
+    return f"{ONBOARDED_COOKIE}=1; Path={PREFIX or ''}/; Max-Age=2592000; SameSite=Lax"
+
+
+def is_index_path(path: str) -> bool:
+    route = urlparse(path).path or "/"
+    return route in ("/", "") or bool(PREFIX and route in (PREFIX, f"{PREFIX}/"))
+
+
+def index_token_redirect(path: str, cookie_header: str | None) -> str | None:
+    """Connect lands on ``/`` with no token: send it to dsh's launch-token URL."""
+    if not is_index_path(path):
+        return None
+    query = parse_qs(urlparse(path).query, keep_blank_values=True)
+    if query.get("token") or has_dsh_auth_cookie(cookie_header):
+        return None
+    token = read_launch_token()
+    if not token:
+        return None
+    query["token"] = [token]
+    return urlunparse(("", "", f"{PREFIX}/", "", urlencode(query, doseq=True), ""))
+
+
+def rewrite_set_cookie(value: str) -> str:
+    """dsh's Strict cookies would be dropped after the portal → workloads hop.
+
+    ``Path=/`` is shared by every session on the workloads host, so a second
+    open session would overwrite this one's login: scope it to the session.
+    """
+    value = re.sub(r"(?i)SameSite=Strict", "SameSite=Lax", value)
+    if PREFIX:
+        value = re.sub(r"(?i)(;\s*Path=)/(?=\s*(;|$))", rf"\g<1>{PREFIX}/", value)
+    return value
+
+
+def rewrite_location(value: str) -> str:
+    if not PREFIX or not value.startswith("/") or value.startswith("//"):
+        return value
+    if value == PREFIX or value.startswith((PREFIX + "/", PREFIX + "?")):
+        return value
+    return PREFIX + value
+
+
+# ---------------------------------------------------------------------------
+# dsh body rewrite (absolute URLs under the Skaha session path)
+# ---------------------------------------------------------------------------
 
 REWRITE_TYPES = (
     "text/html",
@@ -88,36 +325,19 @@ REWRITE_TYPES = (
     "text/javascript",
     "application/javascript",
     "application/x-javascript",
-    "application/json",
-)
+)  # never JSON: dsh returns file contents and transcripts as JSON
+DSH_ABS_PREFIXES = ("/api/", "/assets/", "/favicon", "/plugins/", "/open-in-app/")
 
-ABS_PREFIXES = (
-    "/api/",
-    "/assets/",
-    "/favicon",
-    "/plugins/",
-    "/open-in-app/",
-    "/terminal",
-    "/jupyter",
-    "/marimo",
-    "/vscode",
-    "/hub",
-    "/astroai-agents",
-    "/astroai-terminal",
-)
-
-# Keep channel as "/api"; only network URLs get the session prefix.
+# Keep dsh's channel string "/api"; only network URLs get the session prefix.
 API_SHIM = """<script data-astroai-api-shim>
 (function () {
   var P = {prefix};
   if (!P) return;
-  var T = globalThis.__DSH_TRANSPORT__;
-  if (!T) T = globalThis.__DSH_TRANSPORT__ = {};
+  var T = globalThis.__DSH_TRANSPORT__ || (globalThis.__DSH_TRANSPORT__ = {});
   T.ownsHost = true;
-  function needs(path) {
-    return (path === "/api" || path.indexOf("/api/") === 0 ||
-            path.indexOf("/plugins/") === 0 || path.indexOf("/open-in-app/") === 0) &&
-           path.indexOf(P + "/") !== 0;
+  function needs(p) {
+    return (p === "/api" || p.indexOf("/api/") === 0 || p.indexOf("/plugins/") === 0 ||
+            p.indexOf("/open-in-app/") === 0) && p.indexOf(P + "/") !== 0;
   }
   function rewrite(u) {
     try {
@@ -132,661 +352,279 @@ API_SHIM = """<script data-astroai-api-shim>
   var F = window.fetch;
   window.fetch = function (input, init) {
     if (typeof input === "string") input = rewrite(input);
-    else if (typeof URL !== "undefined" && input instanceof URL)
-      input = new URL(rewrite(input.href));
+    else if (input instanceof URL) input = new URL(rewrite(input.href));
     else if (typeof Request !== "undefined" && input instanceof Request)
       input = new Request(rewrite(input.url), input);
     return F.call(this, input, init);
   };
-  var W = window.WebSocket;
-  function Wrapped(url, protocols) {
-    return protocols === undefined ? new W(rewrite(url)) : new W(rewrite(url), protocols);
-  }
-  Wrapped.prototype = W.prototype;
-  Wrapped.CONNECTING = W.CONNECTING;
-  Wrapped.OPEN = W.OPEN;
-  Wrapped.CLOSING = W.CLOSING;
-  Wrapped.CLOSED = W.CLOSED;
-  window.WebSocket = Wrapped;
-  if (typeof window.EventSource === "function") {
-    var E = window.EventSource;
-    function ES(url, config) {
-      return config === undefined ? new E(rewrite(url)) : new E(rewrite(url), config);
+  function wrap(C) {
+    function W(url, arg) {
+      return arg === undefined ? new C(rewrite(url)) : new C(rewrite(url), arg);
     }
-    ES.prototype = E.prototype;
-    ES.CONNECTING = E.CONNECTING;
-    ES.OPEN = E.OPEN;
-    ES.CLOSED = E.CLOSED;
-    window.EventSource = ES;
+    W.prototype = C.prototype;
+    ["CONNECTING", "OPEN", "CLOSING", "CLOSED"].forEach(function (k) {
+      if (k in C) W[k] = C[k];
+    });
+    return W;
   }
+  window.WebSocket = wrap(window.WebSocket);
+  if (typeof window.EventSource === "function") window.EventSource = wrap(window.EventSource);
 })();
 </script>"""
 
 
-def api_shim_html() -> str:
-    return API_SHIM.replace("{prefix}", json.dumps(PREFIX))
+def _after_head(text: str, snippet: str) -> str:
+    head = text.lower().find("<head")
+    gt = text.find(">", head) if head >= 0 else -1
+    return text[: gt + 1] + snippet + text[gt + 1 :] if gt >= 0 else snippet + text
 
 
-# Rendered in a shadow root so host-page CSS and document-level link
-# interceptors (dsh opens anchors in new tabs) cannot reach the dock. The
-# behaviour lives in /__studio/dock.js: VS Code's CSP blocks inline scripts
-# but allows same-origin ones (and inline styles).
-BRAND_MARK_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">\
-<defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#38bdf8"/>\
-<stop offset=".5" stop-color="#6366f1"/><stop offset="1" stop-color="#a855f7"/></linearGradient></defs>\
-<rect width="32" height="32" rx="7" fill="#0b1026"/>\
-<path d="M9.5 26V14.5a6.5 6.5 0 0 1 13 0V26h-3.2l-3.3-3.4-3.3 3.4z" fill="url(#g)"/>\
-<path d="M16 10.6l1.25 3.15 3.15 1.25-3.15 1.25L16 19.4l-1.25-3.15L11.6 15l3.15-1.25z" fill="#0b1026"/>\
-<ellipse cx="16" cy="19.5" rx="13.5" ry="4" transform="rotate(-16 16 19.5)" fill="none" \
-stroke="url(#g)" stroke-width="1.7" stroke-dasharray="30 6 44"/></svg>
-"""
-
-MANIFEST = {
-    "name": BRAND_TITLE,
-    "short_name": "AstroAI",
-    "start_url": "./",
-    "display": "standalone",
-    "background_color": "#0b1026",
-    "theme_color": "#0b1026",
-    "icons": [{"src": "favicon.svg", "sizes": "any", "type": "image/svg+xml"}],
-}
-
-# dsh's boot splash wordmark (a hashed CSS-module class; first child of the card).
-BRAND_STYLE = """<style data-astroai-brand>
-[data-dsh-boot] > * > :first-child:not([data-dsh-boot-spinner]) {
-  font-size: 0 !important; letter-spacing: 0 !important;
-}
-[data-dsh-boot] > * > :first-child:not([data-dsh-boot-spinner])::after {
-  content: "AstroAI Studio"; font-size: 22px; font-weight: 650; letter-spacing: .01em;
-  background: linear-gradient(135deg, #38bdf8, #6366f1 55%, #a855f7);
-  -webkit-background-clip: text; background-clip: text; color: transparent;
-}
-body { padding-top: 44px !important; box-sizing: border-box !important; }
-#root { height: calc(100vh - 44px) !important; height: calc(100dvh - 44px) !important; }
-</style>"""
-
-_ICONS = {
-    "assistant": '<path d="M8 1.8l1.5 4 4 1.6-4 1.6L8 13l-1.5-4-4-1.6 4-1.6z" fill="currentColor" stroke="none"/>',
-    "terminal": '<rect x="1.5" y="2.5" width="13" height="11" rx="2"/><path d="M4.5 6l2.5 2-2.5 2M8.5 10.5h3"/>',
-    "jupyter": '<circle cx="8" cy="8" r="2.2"/><ellipse cx="8" cy="8" rx="6.5" ry="2.7" transform="rotate(-25 8 8)"/>',
-    "marimo": '<rect x="2" y="2" width="12" height="12" rx="2"/><path d="M2 6h12M6 6v8"/>',
-    "vscode": '<path d="M5.5 4.5L2 8l3.5 3.5M10.5 4.5L14 8l-3.5 3.5M9 3l-2 10"/>',
-    "agents": '<rect x="3" y="5" width="10" height="8" rx="2"/><path d="M8 2.5V5M6.2 9h.01M9.8 9h.01"/>',
-    "compute": '<rect x="2" y="2.5" width="12" height="4.5" rx="1"/><rect x="2" y="9" width="12" height="4.5" rx="1"/>'
-    '<path d="M4.5 4.75h.01M4.5 11.25h.01"/>',
-}
-
-
-def _icon(name: str) -> str:
-    return (
-        '<svg class="ic" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" '
-        f'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">{_ICONS[name]}</svg>'
-    )
-
-
-# (chip id, data-tool, path under the prefix, icon, label, title, welcome text)
-DOCK_TOOLS = (
-    ("astroai-agents-chip", "agent", "/", "assistant", "Assistant", "AI assistant (chat)",
-     "Chat with an AI assistant that reads and edits your files. Your working folder "
-     "is already open: describe a task in plain words."),
-    ("astroai-terminal-chip", "terminal", "/terminal/", "terminal", "Terminal", "Shell in this session",
-     "Bash shell. Try <code>canfar-lab status</code>, or run an installed agent like <code>opencode</code>."),
-    ("astroai-jupyter-chip", "jupyter", "/jupyter/lab", "jupyter", "JupyterLab", "JupyterLab notebooks",
-     "Notebooks with a Python 3 kernel; browse <code>/arc</code> for your stored data."),
-    ("astroai-marimo-chip", "marimo", "/marimo/", "marimo", "Marimo", "Reactive Python notebooks",
-     "Reactive Python notebooks; open <code>starter.py</code> to begin."),
-    ("astroai-vscode-chip", "vscode", "/vscode/", "vscode", "VS Code", "Code editor",
-     "Full code editor in the browser."),
-    None,
-    ("astroai-hub-chip", "hub", "/hub/#agents", "agents", "Agents", "Model keys and coding agents",
-     "Add a model API key, then install coding agents (OpenCode, Claude Code, Codex…)."),
-    ("astroai-compute-chip", "compute", "/hub/#compute", "compute", "Compute", "Batch jobs and Ray clusters",
-     "Start an autoscaling Ray cluster for heavy or GPU work beyond this session."),
-)
-
-
-def _dock_links() -> str:
-    out = []
-    for tool in DOCK_TOOLS:
-        if tool is None:
-            out.append('<div class="sep"></div>')
-            continue
-        chip, data, path, icon, label, title, _ = tool
-        out.append(
-            f'<a href="{{prefix}}{path}" id="{chip}" class="link" data-tool="{data}" '
-            f'title="{title}">{_icon(icon)}<span>{label}</span></a>'
-        )
-    return "\n        ".join(out)
-
-
-def _welcome_items() -> str:
-    out = []
-    for tool in DOCK_TOOLS:
-        if tool is None:
-            continue
-        _chip, _data, path, icon, label, _title, text = tool
-        out.append(
-            f'<li><a href="{{prefix}}{path}">{_icon(icon)}<b>{label}</b>'
-            f'<span class="d">{text}</span></a></li>'
-        )
-    return "\n          ".join(out)
-
-
-COMMAND_DOCK_TEMPLATE = (
-    """
-<div id="astroai-studio-dock" data-astroai-dock data-mode="{mode}" data-prefix="{prefix}"></div>
-<template id="astroai-studio-dock-tpl">
-  <style>
-    :host { all: initial; }
-    * { box-sizing: border-box; }
-    .root {
-      font-family: system-ui, -apple-system, "Segoe UI", Roboto, Ubuntu, sans-serif;
-      font-size: 13px; line-height: 1.3; color: #dfe4ff;
-    }
-    .dock { position: fixed; z-index: 2147483646; user-select: none; -webkit-user-select: none; }
-    .bar .dock {
-      top: 0; left: 0; right: 0; height: 44px; display: flex; align-items: center; justify-content: center;
-      background: #0b1026; border-bottom: 1px solid rgba(129, 140, 248, 0.22);
-    }
-    .bar .pill { background: none; border: none; box-shadow: none; backdrop-filter: none; -webkit-backdrop-filter: none; }
-    @media (max-width: 860px) { .bar a.link span { display: none; } .bar a.link { padding: 6px 8px; } }
-    .mini .dock { bottom: 28px; left: 50%; transform: translateX(-50%);
-                  display: flex; flex-direction: column-reverse; align-items: center; gap: 6px; }
-    .corner .dock { top: 3px; right: 8px; display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
-    .pill {
-      display: flex; align-items: center; gap: 2px;
-      background: rgba(11, 16, 38, 0.94);
-      backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
-      border: 1px solid rgba(129, 140, 248, 0.28); border-radius: 9999px;
-      padding: 3px 5px 3px 10px;
-      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45), 0 2px 6px rgba(0, 0, 0, 0.2);
-    }
-    .mini .pill, .corner .pill { display: none; }
-    .mini.open .pill, .corner.open .pill { display: flex; }
-    .brand { display: flex; align-items: center; gap: 6px; font-weight: 700; margin-right: 6px; font-size: 12px; }
-    .brand img, .handle img { width: 16px; height: 16px; display: block; }
-    .brand span {
-      background: linear-gradient(135deg, #38bdf8, #6366f1 55%, #a855f7);
-      -webkit-background-clip: text; background-clip: text; color: transparent;
-    }
-    .ic { width: 15px; height: 15px; flex: none; }
-    a.link {
-      display: flex; align-items: center; gap: 6px; padding: 5px 9px;
-      border: 1px solid transparent; border-radius: 9999px;
-      color: #c8cff5; text-decoration: none; font-weight: 500; white-space: nowrap;
-    }
-    a.link:hover { background: rgba(255, 255, 255, 0.1); color: #fff; }
-    a.link.active { background: rgba(99, 102, 241, 0.25); color: #e0e7ff; border-color: rgba(129, 140, 248, 0.5); }
-    .sep { width: 1px; height: 14px; background: rgba(255, 255, 255, 0.14); margin: 0 4px; }
-    button { font: inherit; color: #a3acd6; background: none; border: none; cursor: pointer; border-radius: 9999px; }
-    button:hover { color: #fff; background: rgba(255, 255, 255, 0.1); }
-    .help-btn { width: 26px; height: 26px; font-weight: 700; }
-    .handle {
-      display: none; align-items: center; gap: 6px; padding: 4px 11px; font-size: 12px; font-weight: 600;
-      color: #dfe4ff; background: rgba(11, 16, 38, 0.88);
-      border: 1px solid rgba(129, 140, 248, 0.35); box-shadow: 0 4px 14px rgba(0, 0, 0, 0.3);
-    }
-    .handle:hover { background: rgba(11, 16, 38, 0.98); }
-    .nokey {
-      margin-left: 8px; padding: 4px 11px; border-radius: 9999px; font-size: 12px; font-weight: 600;
-      color: #fde68a; background: rgba(251, 191, 36, 0.12); border: 1px solid rgba(251, 191, 36, 0.4);
-      text-decoration: none; white-space: nowrap;
-    }
-    .nokey:hover { background: rgba(251, 191, 36, 0.22); }
-    .nokey[hidden], .mini .nokey, .corner .nokey { display: none; }
-    .mini .handle, .corner .handle { display: flex; }
-    .corner .handle { padding: 2px 9px; font-size: 11px; }
-    .overlay {
-      position: fixed; inset: 0; z-index: 2147483647; display: none;
-      align-items: center; justify-content: center; background: rgba(5, 8, 20, 0.6);
-    }
-    .overlay.show { display: flex; }
-    .card {
-      width: min(580px, calc(100vw - 32px)); max-height: calc(100vh - 48px); overflow: auto;
-      background: #10173a; border: 1px solid rgba(129, 140, 248, 0.3); border-radius: 14px;
-      padding: 22px 24px 18px; box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
-    }
-    .card-head { display: flex; align-items: center; gap: 10px; margin-bottom: 4px; }
-    .card-head img { width: 30px; height: 30px; }
-    h2 { margin: 0; font-size: 18px; color: #fff; }
-    .lead { margin: 0 0 14px; color: #a3acd6; }
-    .tools { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
-    .tools a {
-      display: grid; grid-template-columns: 24px 92px 1fr; align-items: baseline;
-      padding: 7px 8px; border-radius: 8px; color: #c8cff5; text-decoration: none;
-    }
-    .tools a .ic { align-self: center; color: #a5b4fc; }
-    .tools a:hover { background: rgba(255, 255, 255, 0.06); }
-    .tools b { color: #fff; font-weight: 600; }
-    .tools span.d { color: #a3acd6; }
-    .files {
-      margin: 14px 0 0; padding: 10px 12px; border-radius: 8px;
-      background: rgba(251, 191, 36, 0.08); border: 1px solid rgba(251, 191, 36, 0.3); color: #fde9b8;
-    }
-    code {
-      font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; color: #e0e7ff;
-      background: rgba(255, 255, 255, 0.08); padding: 1px 5px; border-radius: 4px;
-    }
-    .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
-    .ok, .primary {
-      padding: 8px 16px; font-weight: 600; border-radius: 8px; text-decoration: none;
-    }
-    .ok { color: #c8cff5; border: 1px solid rgba(129, 140, 248, 0.35); }
-    .primary { color: #fff; background: linear-gradient(135deg, #38bdf8, #6366f1 55%, #a855f7); }
-    .primary:hover { filter: brightness(1.1); }
-  </style>
-  <div class="root">
-    <div class="dock">
-      <div class="pill">
-        <div class="brand"><img src="{prefix}/__studio/logo.svg" alt=""/><span>Studio</span></div>
-        """
-    + _dock_links()
-    + """
-        <button class="help-btn" data-help title="What can I do here?">?</button>
-      </div>
-      <a class="nokey" href="{prefix}/hub/#agents" data-nokey hidden
-         title="The assistant is set to the free DeepSeek model. It needs an OpenCode API key">Add an OpenCode key to start chatting</a>
-      <button class="handle" title="Switch Studio tool"><img src="{prefix}/__studio/logo.svg" alt=""/>Studio</button>
-    </div>
-    <div class="overlay" role="dialog" aria-modal="true" aria-label="Welcome to AstroAI Studio">
-      <div class="card">
-        <div class="card-head"><img src="{prefix}/__studio/logo.svg" alt=""/><h2>Welcome to AstroAI Studio</h2></div>
-        <p class="lead">One CANFAR session, several tools sharing the same files. Switch tools from the
-          Studio bar. The assistant is already set to the free DeepSeek model on OpenCode Zen.
-          <b>First step:</b> add an OpenCode API key so it can answer.</p>
-        <ul class="tools">
-          """
-    + _welcome_items()
-    + """
-        </ul>
-        <div class="files">
-          Working folder: <code data-workdir>…</code><span data-scratch-note hidden> is <b>temporary</b> and is deleted when the session ends.</span><br>
-          Keep results in <code data-home>/arc/home/$USER</code> or <code>/arc/projects/&lt;project&gt;</code>, or run <code>canfar-lab save</code>.
-        </div>
-        <div class="actions">
-          <button class="ok" data-close>Close</button>
-          <a class="primary" href="{prefix}/hub/#agents" data-close-go>Add an OpenCode key</a>
-        </div>
-      </div>
-    </div>
-  </div>
-</template>
-<script src="{prefix}/__studio/dock.js" defer></script>
-"""
-)
-
-DOCK_JS = """(function () {
-  var host = document.getElementById('astroai-studio-dock');
-  var tpl = document.getElementById('astroai-studio-dock-tpl');
-  if (!host || !tpl || host.shadowRoot) return;
-  var root = host.attachShadow({ mode: 'open' });
-  root.appendChild(tpl.content.cloneNode(true));
-  var shell = root.querySelector('.root');
-  var mode = host.getAttribute('data-mode') || 'bar';
-  shell.classList.add(mode);
-  var P = host.getAttribute('data-prefix') || '';
-  function markActive() {
-    var here = location.pathname;
-    var hash = location.hash;
-    root.querySelectorAll('a.link').forEach(function (a) {
-      var href = a.getAttribute('href');
-      var path = href.split('#')[0];
-      var frag = href.indexOf('#') >= 0 ? href.slice(href.indexOf('#')) : '';
-      var on;
-      if (path === P + '/') on = here === path || here === P;
-      else if (frag) on = here.indexOf(path) === 0 && (hash === frag || (!hash && frag === '#agents'));
-      else on = here.indexOf(path.replace(/lab$/, '')) === 0;
-      a.classList.toggle('active', !!on);
-    });
-  }
-  markActive();
-  window.addEventListener('hashchange', markActive);
-  root.addEventListener('click', function (e) {
-    var a = e.target.closest && e.target.closest('a[href]');
-    if (a && !(e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0)) {
-      e.preventDefault();
-      e.stopPropagation();
-      if (a.hasAttribute('data-close-go')) remember();
-      location.assign(a.getAttribute('href'));
-    }
-  });
-  var overlay = root.querySelector('.overlay');
-  var KEY = 'astroai-studio-welcome-v1';
-  var filled = false;
-  function fillPaths() {
-    if (filled) return;
-    filled = true;
-    fetch(P + '/api/studio/status', { credentials: 'same-origin' })
-      .then(function (r) { return r.ok ? r.json() : null; })
-      .then(function (s) {
-        if (!s) return;
-        if (s.workdir) root.querySelector('[data-workdir]').textContent = s.workdir;
-        if (s.home && s.home.indexOf('/arc/') === 0) root.querySelector('[data-home]').textContent = s.home;
-        root.querySelector('[data-scratch-note]').hidden = !s.workdir_ephemeral;
-      })
-      .catch(function () {});
-  }
-  function remember() { try { localStorage.setItem(KEY, '1'); } catch (err) {} }
-  function openHelp() { fillPaths(); overlay.classList.add('show'); }
-  function closeHelp() { overlay.classList.remove('show'); remember(); }
-  root.querySelector('[data-help]').addEventListener('click', openHelp);
-  root.querySelector('[data-close]').addEventListener('click', closeHelp);
-  overlay.addEventListener('click', function (e) { if (e.target === overlay) closeHelp(); });
-  root.addEventListener('keydown', function (e) { if (e.key === 'Escape') closeHelp(); });
-  var handle = root.querySelector('.handle');
-  handle.addEventListener('click', function () { shell.classList.toggle('open'); });
-  document.addEventListener('click', function (e) {
-    if (e.target !== host) shell.classList.remove('open');
-  });
-  var seen = false;
-  try { seen = localStorage.getItem(KEY) === '1'; } catch (err) {}
-  if (mode === 'bar' && !seen) openHelp();
-  if (mode === 'bar') {
-    fetch(P + '/hub/api/keys', { credentials: 'same-origin' })
-      .then(function (r) { return r.ok ? r.json() : null; })
-      .then(function (d) {
-        if (!d || !d.ok) return;
-        var ready = (d.keys || []).some(function (k) { return k.dsh_route && k.present; });
-        root.querySelector('[data-nokey]').hidden = ready;
-      })
-      .catch(function () {});
-  }
-})();
-"""
-
-
-def command_dock_html(mode: str = "bar") -> str:
-    """``bar``: full-width top bar on the assistant page (BRAND_STYLE reserves its
-    height). ``mini``: bottom handle. ``corner``: top-right handle."""
-    return COMMAND_DOCK_TEMPLATE.replace("{prefix}", PREFIX).replace("{mode}", mode)
-
-
-# ---------------------------------------------------------------------------
-# Desk dock (vendored from canfar-lab; pairs with /api/studio/sync)
-# ---------------------------------------------------------------------------
-
-#: Per-process bearer for /api/studio/sync, embedded in the injected config.
-DESK_TOKEN = secrets.token_urlsafe(24)
-_DESK_DOCK_PATH = _LIB / "astroai-dock.html"
-_DESK_DOCK_CACHE: str | None = None
-
-#: Same two buttons as the laptop card. Off unless CANFAR_LAB_DESK is set.
-SESSION_DESK_BUTTONS: tuple[dict[str, Any], ...] = (
-    {
-        "id": "sync",
-        "label": "Sync to CANFAR",
-        "action": "sync_to_canfar",
-        "kind": "primary",
-        "title": "Commit and push, then ring the other side through canfar data",
-    },
-    {
-        "id": "launch-studio",
-        "label": "Launch Studio",
-        "action": "launch_studio",
-        "title": "Open a running AstroAI Studio session, or create one",
-    },
-)
-
-
-def desk_enabled() -> bool:
-    """True when ``CANFAR_LAB_DESK`` is 1, true, or yes. Default off."""
-    return os.environ.get("CANFAR_LAB_DESK", "").strip().lower() in {"1", "true", "yes"}
-
-
-def desk_dock_html() -> str:
-    """The vendored Desk dock asset (single-sourced in canfar-lab)."""
-    global _DESK_DOCK_CACHE
-    if _DESK_DOCK_CACHE is None:
-        try:
-            _DESK_DOCK_CACHE = _DESK_DOCK_PATH.read_text(encoding="utf-8")
-        except OSError:
-            _DESK_DOCK_CACHE = ""
-    return _DESK_DOCK_CACHE
-
-
-def desk_dock_snippet() -> str:
-    """Dock config + asset for dsh pages.
-
-    Always inject when the asset is present. ``enabled`` only sets the initial
-    Hide/Show state so the Studio handle can open the bar without a restart.
-    """
-    asset = desk_dock_html()
-    if not asset:
-        return ""
-    state_url = f"{PREFIX}/api/studio/sync" if PREFIX else "/api/studio/sync"
-    config = {
-        "mode": "session",
-        "token": DESK_TOKEN,
-        "state_url": state_url,
-        "action_url": state_url,
-        "version": PROXY_REVISION,
-        "enabled": desk_enabled(),
-        "buttons": list(SESSION_DESK_BUTTONS),
-    }
-    payload = json.dumps(config).replace("</", "<\\/")
-    return f'<script id="astroai-dock-config" type="application/json">{payload}</script>\n{asset}\n'
-
-
-def _send_asset(handler: BaseHTTPRequestHandler, body: bytes, content_type: str) -> None:
-    handler.send_response(200)
-    handler.send_header("Content-Type", content_type)
-    handler.send_header("Cache-Control", "no-cache")
-    handler.send_header("Content-Length", str(len(body)))
-    handler.end_headers()
-    if handler.command != "HEAD":
-        with contextlib.suppress(BrokenPipeError, ConnectionResetError):
-            handler.wfile.write(body)
-
-
-STUDIO_ASSETS: dict[str, tuple[bytes, str]] = {
-    "/__studio/dock.js": (DOCK_JS.encode(), "text/javascript; charset=utf-8"),
-    "/__studio/logo.svg": (BRAND_MARK_SVG.encode(), "image/svg+xml"),
-    "/favicon.svg": (BRAND_MARK_SVG.encode(), "image/svg+xml"),
-    "/manifest.webmanifest": (json.dumps(MANIFEST).encode(), "application/manifest+json"),
-}
-
-
-def read_launch_token() -> str | None:
-    """Process launch token captured by startup-studio.sh from dsh's boot URL."""
-    path = TOKEN_FILE or _token_file_path()
-    if not path:
-        return None
-    try:
-        text = Path(path).read_text(encoding="utf-8").strip()
-    except OSError:
-        return None
-    return text or None
-
-
-def has_dsh_auth_cookie(cookie_header: str | None) -> bool:
-    if not cookie_header:
-        return False
-    return any(part.strip().startswith(COOKIE_PREFIX) for part in cookie_header.split(";"))
-
-
-def expire_dsh_auth_cookies(cookie_header: str | None) -> list[str]:
-    """Expire every ``dsh-auth-*`` cookie the browser sent (stale session recovery)."""
-    if not cookie_header:
-        return []
-    headers: list[str] = []
-    seen: set[str] = set()
-    for part in cookie_header.split(";"):
-        name = part.strip().split("=", 1)[0].strip()
-        if not name.startswith(COOKIE_PREFIX) or name in seen:
-            continue
-        seen.add(name)
-        headers.append(f"{name}=; Max-Age=0; Path=/")
-        if PREFIX:
-            headers.append(f"{name}=; Max-Age=0; Path={PREFIX}/")
-    return headers
-
-
-def rewrite_set_cookie(value: str) -> str:
-    """Make dsh auth cookies usable after Skaha portal → workloads Connect."""
-    return re.sub(r"(?i)SameSite=Strict", "SameSite=Lax", value)
-
-
-def index_token_redirect(path: str, cookie_header: str | None) -> str | None:
-    """If Skaha hit ``/`` without ``?token=``, redirect to the dsh launch token URL."""
-    parsed = urlparse(path)
-    route = parsed.path or "/"
-    if route not in ("/", "") and route != f"{PREFIX}/" and route != PREFIX:
-        return None
-    if parse_qs(parsed.query).get("token"):
-        return None
-    if has_dsh_auth_cookie(cookie_header):
-        return None
-    token = read_launch_token()
-    if not token:
-        return None
-    query = parse_qs(parsed.query, keep_blank_values=True)
-    query["token"] = [token]
-    target_path = f"{PREFIX}/" if PREFIX else "/"
-    return urlunparse(("", "", target_path, "", urlencode(query, doseq=True), ""))
-
-
-def rewrite_body(data: bytes, content_type: str) -> bytes:
+def rewrite_dsh_body(data: bytes, content_type: str) -> bytes:
     ctype = content_type.split(";", 1)[0].strip().lower()
-    if ctype not in REWRITE_TYPES and not ctype.endswith("+json"):
+    if ctype not in REWRITE_TYPES:
         return data
     try:
         text = data.decode("utf-8")
     except UnicodeDecodeError:
         return data
     if PREFIX:
-        for abs_prefix in ABS_PREFIXES:
-            text = text.replace(f'"{PREFIX}{abs_prefix}', f'"__KEEP__{abs_prefix}')
-            text = text.replace(f"'{PREFIX}{abs_prefix}", f"'__KEEP__{abs_prefix}")
-            text = text.replace(f"`{PREFIX}{abs_prefix}", f"`__KEEP__{abs_prefix}")
-
-            text = text.replace(f'"{abs_prefix}', f'"{PREFIX}{abs_prefix}')
-            text = text.replace(f"'{abs_prefix}", f"'{PREFIX}{abs_prefix}")
-            text = text.replace(f"`{abs_prefix}", f"`{PREFIX}{abs_prefix}")
-
-            text = text.replace(f'"__KEEP__{abs_prefix}', f'"{PREFIX}{abs_prefix}')
-            text = text.replace(f"'__KEEP__{abs_prefix}", f"'{PREFIX}{abs_prefix}")
-            text = text.replace(f"`__KEEP__{abs_prefix}", f"`{PREFIX}{abs_prefix}")
-
+        for p in DSH_ABS_PREFIXES:
+            for q in ('"', "'", "`"):
+                text = text.replace(f"{q}{PREFIX}{p}", f"{q}__KEEP__{p}")
+                text = text.replace(f"{q}{p}", f"{q}{PREFIX}{p}")
+                text = text.replace(f"{q}__KEEP__{p}", f"{q}{PREFIX}{p}")
     if ctype == "text/html":
         if PREFIX:
-            for quote in ('"', "'"):
-                text = text.replace(
-                    f"<base href={quote}/{quote}>",
-                    f"<base href={quote}{PREFIX}/{quote}>",
-                )
-                text = text.replace(
-                    f"<base href={quote}/{quote} />",
-                    f"<base href={quote}{PREFIX}/{quote} />",
-                )
+            for q in ('"', "'"):
+                text = text.replace(f"<base href={q}/{q}", f"<base href={q}{PREFIX}/{q}")
+            if "data-astroai-api-shim" not in text:
+                text = _after_head(text, API_SHIM.replace("{prefix}", json.dumps(PREFIX)))
         text = stick_html_title(text, BRAND_TITLE)
-        if PREFIX and "data-astroai-api-shim" not in text:
-            shim = api_shim_html()
-            lower = text.lower()
-            head = lower.find("<head")
-            if head >= 0:
-                gt = text.find(">", head)
-                text = text[: gt + 1] + shim + text[gt + 1 :] if gt >= 0 else shim + text
-            else:
-                text = shim + text
-        if "data-astroai-brand" not in text:
-            head = text.lower().find("<head")
-            gt = text.find(">", head) if head >= 0 else -1
-            text = text[: gt + 1] + BRAND_STYLE + text[gt + 1 :] if gt >= 0 else BRAND_STYLE + text
-        text = _add_dock(text, "bar")
-        if "astroai-dock-config" not in text:
-            snippet = desk_dock_snippet()
-            if snippet:
-                idx = text.lower().rfind("</body>")
-                text = text[:idx] + snippet + text[idx:] if idx >= 0 else text + snippet
     return text.encode("utf-8")
 
 
-def _add_dock(text: str, mode: str) -> str:
-    if 'data-astroai-proxy-rev="' not in text:
-        text = text.replace(
-            "<head>",
-            f'<head><meta data-astroai-proxy-rev="{PROXY_REVISION}" />',
-            1,
-        )
-    if "data-astroai-dock" not in text:
-        dock = command_dock_html(mode)
-        idx = text.lower().rfind("</body>")
-        text = text[:idx] + dock + text[idx:] if idx >= 0 else text + dock
-    return text
+# ---------------------------------------------------------------------------
+# Tab strip
+# ---------------------------------------------------------------------------
+
+TAB_HEIGHT = 30
+
+# Shadow root keeps host CSS out; same-origin script so page CSPs that block
+# inline script still run it. The page is pushed down by TAB_HEIGHT.
+TABS_JS = r"""(function () {
+  if (window.__astroaiTabs) return;
+  window.__astroaiTabs = true;
+  var el = document.getElementById("astroai-tabs-config");
+  if (!el) return;
+  var cfg;
+  try { cfg = JSON.parse(el.textContent); } catch (e) { return; }
+  var H = cfg.height;
+  var host = document.createElement("div");
+  host.setAttribute("data-astroai-tabs", "");
+  host.style.cssText = "position:fixed;top:0;left:0;right:0;height:" + H + "px;z-index:2147483646;";
+  var root = host.attachShadow({ mode: "open" });
+  root.innerHTML =
+    "<style>" +
+    ":host{all:initial}" +
+    "nav{box-sizing:border-box;height:" + H + "px;display:flex;align-items:stretch;gap:2px;" +
+    "padding:0 8px;font:500 13px/1 system-ui,-apple-system,'Segoe UI',sans-serif;" +
+    "background:#0f1222;color:#a6accd;border-bottom:1px solid #262a40;" +
+    "overflow-x:auto;scrollbar-width:none}" +
+    ".brand{display:flex;align-items:center;padding:0 10px 0 2px;color:#e4e6f5;font-weight:650}" +
+    ".brand img{width:20px;height:20px;border-radius:5px;display:block}" +
+    "a.icon{padding:0 10px}a.icon svg{width:18px;height:18px;fill:currentColor;display:block}" +
+    "a{display:flex;align-items:center;gap:6px;padding:0 12px;color:inherit;text-decoration:none;" +
+    "border-bottom:2px solid transparent;white-space:nowrap;flex:none}" +
+    "@media (max-width:540px){.brand{display:none}a{padding:0 9px}}" +
+    "a:hover{color:#e4e6f5;background:#1a1e33}" +
+    "a:focus-visible{outline:2px solid #7aa2f7;outline-offset:-2px}" +
+    "a[aria-current=page]{color:#fff;border-bottom-color:#7aa2f7}" +
+    ".b{min-width:16px;height:16px;padding:0 4px;box-sizing:border-box;border-radius:8px;" +
+    "background:#e0af68;color:#1a1b26;font-size:11px;font-weight:700;display:none;" +
+    "align-items:center;justify-content:center}" +
+    ".b.on{display:inline-flex}" +
+    "@media (prefers-color-scheme: light){" +
+    "nav{background:#f4f5fa;color:#4c5068;" +
+    "border-bottom-color:#d8dbe8}.brand{color:#1c1e2b}a:hover{background:#e6e8f2;color:#1c1e2b}" +
+    "a[aria-current=page]{color:#1c1e2b;border-bottom-color:#3d59a1}}" +
+    "</style><nav aria-label='Session'></nav>";
+  var nav = root.querySelector("nav");
+  var brand = document.createElement("span");
+  brand.className = "brand";
+  if (cfg.logo) {
+    var img = document.createElement("img");
+    img.src = cfg.logo;
+    img.alt = cfg.brand;
+    img.title = cfg.brand;
+    img.onerror = function () { brand.textContent = cfg.brand; };
+    brand.appendChild(img);
+  } else {
+    brand.textContent = cfg.brand;
+  }
+  nav.appendChild(brand);
+  var badges = {}, spaced = false;
+  cfg.tabs.forEach(function (t) {
+    if (t.end && !spaced) {
+      var gap = document.createElement("span");
+      gap.style.flex = "1 1 auto";
+      nav.appendChild(gap);
+      spaced = true;
+    }
+    var a = document.createElement("a");
+    a.href = t.href;
+    if (t.icon) {
+      a.className = "icon";
+      a.title = t.label;
+      a.setAttribute("aria-label", t.label);
+      var svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+      svg.setAttribute("viewBox", "0 0 24 24");
+      svg.setAttribute("aria-hidden", "true");
+      var path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+      path.setAttribute("d", t.icon);
+      svg.appendChild(path);
+      a.appendChild(svg);
+    } else {
+      a.textContent = t.label;
+    }
+    if (t.id === cfg.active) a.setAttribute("aria-current", "page");
+    if (t.badge) {
+      var b = document.createElement("span");
+      b.className = "b";
+      a.appendChild(b);
+      badges[t.id] = { el: b, a: a, url: t.href + t.badge, tab: t };
+    }
+    nav.appendChild(a);
+  });
+  var style = document.createElement("style");
+  style.setAttribute("data-astroai-tabs-style", "");
+  style.textContent =
+    "html{scroll-padding-top:" + H + "px}" +
+    "body{margin-top:" + H + "px!important;height:calc(100% - " + H + "px)!important}" +
+    "body>#root,body>#app,body>main{height:calc(100dvh - " + H + "px)!important;" +
+    "min-height:0!important;max-height:calc(100dvh - " + H + "px)!important}" +
+    // JupyterLab pins its shell to the viewport; move it below the strip.
+    "body>#main.jp-LabShell{top:" + H + "px!important}" +
+    // "contain": the body becomes the containing block of fixed elements, so an
+    // app's top:0 toolbars land below the strip (the strip then lives outside body).
+    (cfg.layout === "contain" ? "body{transform:translateZ(0)}" : "");
+  (document.head || document.documentElement).appendChild(style);
+  // "viewport": the app sizes itself from window.innerHeight (VS Code); report
+  // the height below the strip so its status bar stays on screen.
+  var ih = Object.getOwnPropertyDescriptor(window, "innerHeight");
+  if (cfg.layout === "viewport" && ih && ih.get && ih.configurable) {
+    Object.defineProperty(window, "innerHeight", {
+      configurable: true,
+      get: function () { return Math.max(0, ih.get.call(window) - H); },
+    });
+  }
+  function mount() {
+    if (cfg.layout === "contain") document.documentElement.appendChild(host);
+    else document.body.insertBefore(host, document.body.firstChild);
+  }
+  if (document.body) mount(); else document.addEventListener("DOMContentLoaded", mount);
+
+  Object.keys(badges).forEach(function (id) {
+    var s = badges[id];
+    var timer = null;
+    function poll() {
+      fetch(s.url, { credentials: "same-origin", headers: { Accept: "application/json" } })
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (d) {
+          var n = d && !d.ready ? Number(d.pending) || 0 : 0;
+          s.el.textContent = n ? String(n) : "";
+          s.el.classList.toggle("on", n > 0);
+          s.a.title = n ? s.tab.label + ": " + n + " step" + (n === 1 ? "" : "s") +
+            " left to set up this session" : s.tab.label;
+          timer = setTimeout(poll, n ? 5000 : 60000);
+        })
+        .catch(function () { timer = setTimeout(poll, 15000); });
+    }
+    poll();
+    document.addEventListener("visibilitychange", function () {
+      if (document.visibilityState === "visible") { clearTimeout(timer); poll(); }
+    });
+  });
+})();
+"""
 
 
-def inject_dock(data: bytes, content_type: str, mode: str = "mini") -> bytes:
-    """Tools already served under the session base path: add the dock, rewrite nothing."""
-    if content_type.split(";", 1)[0].strip().lower() != "text/html":
-        return data
-    try:
-        text = data.decode("utf-8")
-    except UnicodeDecodeError:
-        return data
-    return _add_dock(text, mode).encode("utf-8")
+def tabs_snippet(active: str) -> str:
+    cfg = {
+        "brand": BRAND_TITLE,
+        "logo": f"{PREFIX}{LOGO_ROUTE}" if Path(LOGO_FILE).is_file() else "",
+        "height": TAB_HEIGHT,
+        "active": active,
+        "layout": next((t["layout"] for t in TABS if t["id"] == active), ""),
+        "tabs": [
+            {
+                "id": t["id"],
+                "label": t["label"],
+                "href": tab_href(t),
+                "badge": t["badge"],
+                "end": t["align"] == "end",
+                "icon": ICONS.get(t["icon"], ""),
+            }
+            for t in TABS
+        ],
+    }
+    payload = json.dumps(cfg).replace("</", "<\\/")
+    return (
+        f'<script id="astroai-tabs-config" type="application/json">{payload}</script>'
+        f'<script src="{PREFIX}{ASSET_ROUTE}" defer></script>'
+    )
 
 
-_VSCODE_WEB_CONFIG_RE = re.compile(
+VSCODE_SETTINGS = os.environ.get(
+    "ASTROAI_VSCODE_SETTINGS", "/opt/openvscode-server/data/Machine/settings.json"
+)
+_VSCODE_CONFIG_RE = re.compile(
     r'(<meta id="vscode-workbench-web-configuration" data-settings=")([^"]*)(")'
 )
 
 
-def _vscode_defaults() -> dict[str, Any]:
-    try:
-        data = json.loads(Path(VSCODE_SETTINGS).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {}
-    return data if isinstance(data, dict) else {}
-
-
-def inject_vscode(data: bytes, content_type: str) -> bytes:
-    """VS Code for the Web keeps user/application settings in browser storage, so
-    Machine settings cannot switch off workspace trust or the walkthrough. The
-    embedder config (``configurationDefaults``) is applied before either runs."""
-    out = inject_dock(data, content_type)
-    if out is data:
+def patch_vscode(data: bytes, content_type: str) -> bytes:
+    """Machine settings as ``configurationDefaults``; workspace trust off."""
+    if content_type.split(";", 1)[0].strip().lower() != "text/html":
         return data
-    text = out.decode("utf-8")
+    try:
+        text = data.decode("utf-8")
+        defaults = json.loads(Path(VSCODE_SETTINGS).read_text(encoding="utf-8"))
+    except (UnicodeDecodeError, OSError, ValueError):
+        return data
+    if not isinstance(defaults, dict):
+        return data
 
     def patch(m: re.Match[str]) -> str:
         try:
             cfg = json.loads(html.unescape(m.group(2)))
         except ValueError:
             return m.group(0)
-        defaults = _vscode_defaults()
         cfg["configurationDefaults"] = {**cfg.get("configurationDefaults", {}), **defaults}
         if defaults.get("security.workspace.trust.enabled") is False:
             cfg["enableWorkspaceTrust"] = False
         return m.group(1) + html.escape(json.dumps(cfg), quote=True) + m.group(3)
 
-    return _VSCODE_WEB_CONFIG_RE.sub(patch, text, count=1).encode("utf-8")
+    return _VSCODE_CONFIG_RE.sub(patch, text, count=1).encode("utf-8")
 
 
-def inject_corner_dock(data: bytes, content_type: str) -> bytes:
-    """Terminal: a bottom handle would sit on the shell prompt, so use the top-right corner."""
-    return inject_dock(data, content_type, "corner")
+def inject_tabs(data: bytes, content_type: str, active: str) -> bytes:
+    if content_type.split(";", 1)[0].strip().lower() != "text/html":
+        return data
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        return data
+    if "astroai-tabs-config" in text:
+        return data
+    snippet = tabs_snippet(active)
+    idx = text.lower().rfind("</body>")
+    text = text[:idx] + snippet + text[idx:] if idx >= 0 else text + snippet
+    return text.encode("utf-8")
 
 
-def rewrite_location(value: str) -> str:
-    """Keep absolute Locations under the Skaha session path."""
-    if not PREFIX or not value.startswith("/"):
-        return value
-    if value == PREFIX or value.startswith((PREFIX + "/", PREFIX + "?")):
-        return value
-    return PREFIX + value
-
-
-def upstream_path(path: str) -> str:
-    """Strip Skaha ``/session/contrib/<id>`` before forwarding."""
-    if not PREFIX:
-        return path
-    parsed = urlparse(path)
-    route = parsed.path or "/"
-    if route == PREFIX or route.startswith(PREFIX + "/"):
-        rest = route[len(PREFIX) :] or "/"
-        return urlunparse(("", "", rest, "", parsed.query, parsed.fragment))
-    return path
-
+# ---------------------------------------------------------------------------
+# Forwarding
+# ---------------------------------------------------------------------------
 
 HOP_BY_HOP = {
     "connection",
@@ -800,679 +638,297 @@ HOP_BY_HOP = {
     "content-length",
 }
 
-
-def is_websocket_request(handler: BaseHTTPRequestHandler) -> bool:
-    conn = handler.headers.get("Connection", "").lower()
-    upgrade = handler.headers.get("Upgrade", "").lower()
-    return "upgrade" in conn and "websocket" in upgrade
-
-
-def _splice_sockets(client: socket.socket, upstream: socket.socket) -> None:
-    sockets = [client, upstream]
-    try:
-        while True:
-            readable, _, _ = select.select(sockets, [], [], 300)
-            if not readable:
-                continue
-            for src in readable:
-                dst = upstream if src is client else client
-                data = src.recv(65536)
-                if not data:
-                    return
-                dst.sendall(data)
-    except OSError:
-        return
-
-
-def forward_websocket(handler: BaseHTTPRequestHandler, host: str, port: int, path: str) -> None:
-    try:
-        upstream = socket.create_connection((host, port), timeout=30)
-    except OSError as exc:
-        handler.send_error(502, f"upstream unreachable: {exc}")
-        return
-    lines = [f"{handler.command} {path} HTTP/1.1"]
-    for key, value in handler.headers.items():
-        lines.append(f"{key}: {value}")
-    payload = ("\r\n".join(lines) + "\r\n\r\n").encode("iso-8859-1")
-    try:
-        upstream.sendall(payload)
-        _splice_sockets(handler.connection, upstream)
-    except OSError:
-        pass
-    finally:
-        with contextlib.suppress(OSError):
-            upstream.close()
-
-
-def _forward_headers(handler: BaseHTTPRequestHandler) -> dict[str, str]:
-    headers = {
-        k: v
-        for k, v in handler.headers.items()
-        if k.lower() not in HOP_BY_HOP and k.lower() not in ("host", "accept-encoding")
-    }
-    browser_host = handler.headers.get("Host") or handler.headers.get("X-Forwarded-Host")
-    if browser_host:
-        headers["Host"] = browser_host.split(",", 1)[0].strip()
-    headers["Accept-Encoding"] = "identity"
-    return headers
-
-
 STARTING_HTML = (
-    b"<!DOCTYPE html><html><head>"
-    b'<meta charset="utf-8"/>'
-    b'<meta http-equiv="refresh" content="3"/>'
-    b"<title>AstroAI Studio</title></head>"
-    b"<body style='font-family:system-ui,-apple-system,sans-serif;padding:2rem;line-height:1.5;background:#181926;color:#cad3f5'>"
-    b"<h1>AstroAI Studio is starting</h1>"
-    b"<p>Preparing the coding workbench and tools &mdash; this page refreshes automatically.</p>"
-    b"</body></html>"
+    b"<!DOCTYPE html><html><head><meta charset='utf-8'/>"
+    b"<meta http-equiv='refresh' content='3'/><title>CANFAR Studio</title></head>"
+    b"<body style='font-family:system-ui,sans-serif;padding:2rem;line-height:1.5;"
+    b"background:#0f1222;color:#e4e6f5'><h1>Your session is starting</h1>"
+    b"<p>This page refreshes by itself. It usually takes under a minute.</p></body></html>"
 )
 
 
-def _is_index_path(path: str) -> bool:
-    route = urlparse(path).path or "/"
-    return route in ("/", "") or bool(PREFIX and (route == PREFIX or route == f"{PREFIX}/"))
+def unavailable_html(label: str, *, first_start: bool = False) -> bytes:
+    note = (
+        "Starting it for the first time in this session. This takes a few seconds."
+        if first_start
+        else "It is starting or restarting."
+    )
+    return (
+        "<!DOCTYPE html><html><head><meta charset='utf-8'/>"
+        "<meta name='viewport' content='width=device-width,initial-scale=1'/>"
+        f"<meta http-equiv='refresh' content='2'/><title>{label}</title></head>"
+        "<body style='margin:0;font:15px/1.5 system-ui,sans-serif;"
+        "background:#0f1222;color:#e4e6f5'>"
+        "<div style='max-width:520px;margin:18vh auto 0;padding:0 16px'>"
+        f"<h1 style='font-size:20px;margin:0 0 8px'>Opening {label}…</h1>"
+        f"<p style='color:#a6accd;margin:0'>{note} This page refreshes by itself.</p>"
+        "</div></body></html>"
+    ).encode()
 
 
-def _send_html(handler: BaseHTTPRequestHandler, status: int, body: bytes) -> None:
+def failed_html(label: str, log: str, retry_href: str) -> bytes:
+    """No auto-refresh: the tool gave up, so say so and offer one retry."""
+    return (
+        "<!DOCTYPE html><html><head><meta charset='utf-8'/>"
+        "<meta name='viewport' content='width=device-width,initial-scale=1'/>"
+        f"<title>{html.escape(label)}</title></head>"
+        "<body style='margin:0;font:15px/1.5 system-ui,sans-serif;"
+        "background:#0f1222;color:#e4e6f5'>"
+        "<div style='max-width:560px;margin:18vh auto 0;padding:0 16px'>"
+        f"<h1 style='font-size:20px;margin:0 0 8px'>{html.escape(label)} could not start</h1>"
+        "<p style='color:#a6accd;margin:0 0 16px'>It stopped right after starting, several "
+        "times. The reason is at the end of its log, which you can open from the Terminal "
+        f"tab:<br/><code style='color:#e4e6f5'>{html.escape(log)}</code></p>"
+        f"<a href='{html.escape(retry_href)}' style='display:inline-block;padding:8px 14px;"
+        "border-radius:8px;background:#4f46e5;color:#fff;text-decoration:none'>Try again</a>"
+        "</div></body></html>"
+    ).encode()
+
+
+def _send(handler: BaseHTTPRequestHandler, status: int, body: bytes, ctype: str) -> None:
     handler.send_response(status)
-    handler.send_header("Content-Type", "text/html; charset=utf-8")
+    handler.send_header("Content-Type", ctype)
     handler.send_header("Cache-Control", "no-store")
     handler.send_header("Content-Length", str(len(body)))
+    handler.send_header("Connection", "close")  # any request body is left unread
     handler.end_headers()
+    handler.close_connection = True
     if handler.command != "HEAD":
         with contextlib.suppress(BrokenPipeError, ConnectionResetError):
             handler.wfile.write(body)
 
 
-def _send_json(handler: BaseHTTPRequestHandler, status: int, data: Any) -> None:
-    body = json.dumps(data, indent=2).encode("utf-8")
-    handler.send_response(status)
-    handler.send_header("Content-Type", "application/json; charset=utf-8")
+def _redirect(
+    handler: BaseHTTPRequestHandler, location: str, cookies: tuple[str, ...] | list[str] = ()
+) -> None:
+    handler.send_response(302, "Found")
+    handler.send_header("Location", location)
     handler.send_header("Cache-Control", "no-store")
-    handler.send_header("Content-Length", str(len(body)))
+    for cookie in cookies:
+        handler.send_header("Set-Cookie", cookie)
+    handler.send_header("Content-Length", "0")
+    handler.send_header("Connection", "close")
     handler.end_headers()
-    if handler.command != "HEAD":
-        with contextlib.suppress(BrokenPipeError, ConnectionResetError):
-            handler.wfile.write(body)
+    handler.close_connection = True
 
 
-def _check_port_open(host: str, port: int) -> bool:
+def port_open(port: int) -> bool:
     try:
-        with socket.create_connection((host, port), timeout=0.2):
+        with socket.create_connection((UPSTREAM_HOST, port), timeout=0.2):
             return True
     except OSError:
         return False
 
 
-def _studio_workdir() -> str | None:
-    """Working folder written by startup-studio.sh (resolved after the proxy starts)."""
-    state = os.environ.get("ASTROAI_STUDIO_STATE", "").strip().rstrip("/")
-    if not state:
-        return None
-    try:
-        return Path(f"{state}/studio-cwd").read_text(encoding="utf-8").strip() or None
-    except OSError:
-        return None
-
-
-def _is_ephemeral(path: str) -> bool:
-    """Only /arc (home and projects) outlives the session; /srcdir and scratch do not."""
-    home = os.path.expanduser("~").rstrip("/")
-    persistent = ("/arc/", f"{home}/") if home.startswith("/arc/") else ("/arc/",)
-    return not (path.rstrip("/") + "/").startswith(persistent)
-
-
-def get_studio_status() -> dict[str, Any]:
-    """Collect real-time health and system telemetry for the Studio session."""
+def studio_status() -> dict[str, Any]:
     services = {
-        "agent": {
-            "name": "Agents (DSH)",
-            "port": DSH_PORT,
-            "up": _check_port_open(DSH_HOST, DSH_PORT),
-        },
-        "terminal": {
-            "name": "Terminal (Ghostty)",
-            "port": TERMINAL_PORT,
-            "up": _check_port_open(TERMINAL_HOST, TERMINAL_PORT),
-        },
-        "jupyter": {
-            "name": "JupyterLab",
-            "port": JUPYTER_PORT,
-            "up": _check_port_open(JUPYTER_HOST, JUPYTER_PORT),
-        },
-        "marimo": {
-            "name": "Marimo",
-            "port": MARIMO_PORT,
-            "up": _check_port_open(MARIMO_HOST, MARIMO_PORT),
-        },
-        "vscode": {
-            "name": "VS Code",
-            "port": VSCODE_PORT,
-            "up": _check_port_open(VSCODE_HOST, VSCODE_PORT),
-        },
-        "hub": {
-            "name": "Compute & Hub",
-            "port": WIZARD_PORT,
-            "up": _check_port_open(WIZARD_HOST, WIZARD_PORT),
-        },
+        t["id"]: {"name": t["label"], "port": t["port"], "up": port_open(t["port"])} for t in TABS
     }
-    scratch_dir = os.environ.get("SCRATCH", "/scratch")
-    scratch_free_gb = 0.0
-    if os.path.isdir(scratch_dir):
-        with contextlib.suppress(OSError):
-            usage = shutil.disk_usage(scratch_dir)
-            scratch_free_gb = round(usage.free / (1024**3), 1)
-
-    cpu_count = os.cpu_count() or 1
-    load_avg = [round(x, 2) for x in os.getloadavg()] if hasattr(os, "getloadavg") else []
-
-    workdir = _studio_workdir()
     return {
         "status": "ready" if any(s["up"] for s in services.values()) else "starting",
+        "image": "dsh",
         "session_id": SESSION_ID or None,
         "prefix": PREFIX or None,
-        "workdir": workdir,
-        "workdir_ephemeral": bool(workdir) and _is_ephemeral(workdir),
-        "home": os.path.expanduser("~"),
         "services": services,
-        "resources": {
-            "cpus": cpu_count,
-            "load_avg": load_avg,
-            "scratch_free_gb": scratch_free_gb,
-        },
     }
 
 
-# ---------------------------------------------------------------------------
-# /api/studio/sync — Desktop sync chip + parity state on session dsh pages
-# ---------------------------------------------------------------------------
-
-_SYNC_LOCK = threading.Lock()
-_SYNC_TIMEOUT_SECONDS = 300
-_CLUSTER_TIMEOUT_SECONDS = 60
-#: Same window canfar-lab's ``sync.bus.read_ready`` trusts a ready.json marker.
-_READY_MAX_AGE_SECONDS = 7200
-_DESK_VERSION_CACHE: dict[str, str] = {"dsh": "", "lab": ""}
-_SYNC_ROUTE = "/api/studio/sync"
+def tab_location(tab: dict[str, Any], value: str) -> str:
+    """Absolute redirects from a stripped tab go back under that tab's prefix."""
+    if tab["prefix"] == "/" or not tab["strip"]:
+        return rewrite_location(value)
+    if value.startswith("/") and not value.startswith("//"):
+        return f"{PREFIX}{tab['prefix']}{value}"
+    return value
 
 
-class SyncBusy(RuntimeError):
-    """An exchange is already running in this proxy process."""
+def upstream_path(path: str) -> str:
+    """Strip Skaha's ``/session/contrib/<id>``, also when it appears twice.
 
-
-class SyncUnavailable(RuntimeError):
-    """The canfar-lab CLI is not installed in this image."""
-
-
-def _lab_binary() -> str | None:
-    explicit = os.environ.get("ASTROAI_LAB_BIN", "").strip()
-    if explicit:
-        return explicit
-    return shutil.which("canfar-lab")
-
-
-def _read_json_file(path: Path) -> dict[str, Any] | None:
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    return data if isinstance(data, dict) else None
-
-
-def _utc_now() -> str:
-    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-
-
-def installed_dsh_version() -> str | None:
-    """Version of the dsh npm package behind ``dsh`` on PATH, when detectable."""
-    if _DESK_VERSION_CACHE["dsh"]:
-        return _DESK_VERSION_CACHE["dsh"]
-    version: str | None = None
-    binary = shutil.which("dsh")
-    if binary:
-        try:
-            resolved = Path(binary).resolve()
-        except OSError:
-            resolved = None
-        if resolved is not None:
-            for parent in list(resolved.parents)[:8]:
-                if parent.name != "dsh":
-                    continue
-                manifest = _read_json_file(parent / "package.json")
-                if manifest and manifest.get("version"):
-                    version = str(manifest["version"])
-                break
-    _DESK_VERSION_CACHE["dsh"] = version or ""
-    return version
-
-
-def lab_version() -> str | None:
-    """canfar-lab version as reported by the CLI (cached; None when absent)."""
-    if _DESK_VERSION_CACHE["lab"]:
-        return _DESK_VERSION_CACHE["lab"]
-    version: str | None = None
-    binary = _lab_binary()
-    if binary:
-        with contextlib.suppress(OSError, subprocess.SubprocessError):
-            proc = subprocess.run(
-                [binary, "--version"],
-                capture_output=True,
-                text=True,
-                timeout=20,
-                check=False,
-            )
-            if proc.returncode == 0:
-                words = (proc.stdout or proc.stderr).strip().split()
-                if words and re.search(r"\d", words[-1]):
-                    version = words[-1]
-    _DESK_VERSION_CACHE["lab"] = version or ""
-    return version
-
-
-def _ready_is_fresh(payload: dict[str, Any]) -> bool:
-    """Only trust ``ready.json`` while its ``ts`` is within the watcher window.
-
-    Mirrors ``canfar-lab``'s ``sync.bus.read_ready``: a marker left behind by a
-    previous boot (same shared ``$HOME``) must not claim the watcher is up.
+    dsh joins some paths onto ``document.baseURI`` (``new URL("/api/remote.mux"
+    .slice(1), baseURI)``); after the body rewrite that string already carries
+    the prefix, so the browser asks for ``<prefix><prefix>/api/...``.
     """
-    try:
-        when = datetime.fromisoformat(str(payload.get("ts") or "").replace("Z", "+00:00"))
-    except ValueError:
-        return False
-    if when.tzinfo is None:
-        when = when.replace(tzinfo=timezone.utc)
-    return (datetime.now(timezone.utc) - when).total_seconds() <= _READY_MAX_AGE_SECONDS
+    if not PREFIX:
+        return path
+    parsed = urlparse(path)
+    route = parsed.path or "/"
+    if not (route == PREFIX or route.startswith(PREFIX + "/")):
+        return path
+    while route == PREFIX or route.startswith(PREFIX + "/"):
+        route = route[len(PREFIX) :] or "/"
+    return urlunparse(("", "", route, "", parsed.query, ""))
 
 
-def sync_mailbox_state() -> dict[str, Any]:
-    """Read the shared mailbox under ``$HOME`` (doorbell only, never the protocol)."""
-    home = Path(os.path.expanduser("~"))
-    explicit = os.environ.get("CANFAR_LAB_SYNC_MAILBOX", "").strip()
-    box = Path(explicit) if explicit else home / ".canfar" / "lab" / "sync"
-    state: dict[str, Any] = {
-        "path": str(box),
-        "exists": box.is_dir(),
-        "shared": True,  # session side: the mailbox IS the shared home
-        "session_ready": False,
-        "counts": {"requests": 0, "processing": 0, "events": 0},
-        "last_exchange": None,
+def _upstream_headers(handler: BaseHTTPRequestHandler, tab: dict[str, Any]) -> dict[str, str]:
+    headers = {
+        k: v
+        for k, v in handler.headers.items()
+        if k.lower() not in HOP_BY_HOP
+        and k.lower() not in ("host", "accept-encoding", "x-forwarded-prefix")
     }
-    if not state["exists"]:
-        return state
-    for kind in state["counts"]:
-        directory = box / kind
-        if directory.is_dir():
-            state["counts"][kind] = len(list(directory.glob("*.json")))
-    ready = _read_json_file(box / "ready.json")
-    if (
-        ready is not None
-        and ready.get("side") in (None, "session")
-        and _ready_is_fresh(ready)
-    ):
-        state["session_ready"] = True
-    last = _read_json_file(box / "state" / "session.json")
-    if last is not None:
-        state["last_exchange"] = last
-    return state
+    host = handler.headers.get("Host") or handler.headers.get("X-Forwarded-Host")
+    if host:
+        headers["Host"] = host.split(",", 1)[0].strip()
+    headers["Accept-Encoding"] = "identity"
+    if tab["prefix"] != "/" and tab["strip"]:
+        headers["X-Forwarded-Prefix"] = f"{PREFIX}{tab['prefix']}"
+    if tab["bearer_env"]:
+        for k in [k for k in headers if k.lower() == "authorization"]:
+            del headers[k]
+        token = os.environ.get(tab["bearer_env"], "").strip()
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+    return headers
 
 
-def get_sync_state() -> dict[str, Any]:
-    """Dock chip state for the session side (shape mirrors the desk state)."""
-    return {
-        "ok": True,
-        "mode": "session",
-        "ts": _utc_now(),
-        "root": _studio_workdir() or "",
-        "session": {
-            "id": SESSION_ID or None,
-            "name": BRAND_TITLE,
-            "status": "Running" if SESSION_ID else "Unknown",
-        },
-        "dsh": {"spec": "image", "installed": installed_dsh_version(), "release": None},
-        "lab": {"version": lab_version()},
-        "mailbox": sync_mailbox_state(),
-        "auth": None,
-    }
+def _splice(client: socket.socket, upstream: socket.socket) -> None:
+    pair = [client, upstream]
+    with contextlib.suppress(OSError):
+        while True:
+            readable, _, _ = select.select(pair, [], [], 300)
+            for src in readable:
+                data = src.recv(65536)
+                if not data:
+                    return
+                (upstream if src is client else client).sendall(data)
 
 
-def _token_matches(handler: BaseHTTPRequestHandler) -> bool:
-    supplied = handler.headers.get("X-Desk-Token") or ""
-    return bool(supplied) and secrets.compare_digest(supplied, DESK_TOKEN)
-
-
-def _is_loopback(handler: BaseHTTPRequestHandler) -> bool:
+def forward_websocket(
+    handler: BaseHTTPRequestHandler, port: int, path: str, headers: dict[str, str]
+) -> None:
     try:
-        host = handler.client_address[0]
-    except (AttributeError, IndexError):
-        return False
-    return host in ("127.0.0.1", "::1")
-
-
-def sync_authorized(handler: BaseHTTPRequestHandler) -> bool:
-    """Bearer token from the injected config, or a same-container caller."""
-    return _is_loopback(handler) or _token_matches(handler)
-
-
-def read_json_body(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
-    """Decode a JSON object body; ``ValueError`` when the body is undecodable.
-
-    An action like ``sync_to_desktop`` mutates the user's repos, so a malformed
-    body must not silently mean "run with defaults" (i.e. without ``dry_run``).
-    """
+        upstream = socket.create_connection((UPSTREAM_HOST, port), timeout=30)
+    except OSError as exc:
+        handler.send_error(502, f"upstream unreachable: {exc}")
+        return
+    lines = [f"{handler.command} {path} HTTP/1.1"]
+    lines += [f"{k}: {v}" for k, v in headers.items()]
+    lines += ["Connection: Upgrade", f"Upgrade: {handler.headers.get('Upgrade', 'websocket')}"]
     try:
-        length = int(handler.headers.get("Content-Length") or 0)
-    except ValueError:
-        length = 0
-    if length <= 0:
-        return {}
-    if length > 1_000_000:
-        raise ValueError("body too large")
-    try:
-        raw = handler.rfile.read(length)
-        data = json.loads(raw.decode("utf-8"))
-    except (OSError, UnicodeDecodeError) as exc:
-        raise ValueError("unreadable body") from exc
-    except ValueError as exc:
-        raise ValueError("invalid JSON body") from exc
-    if data is None:
-        return {}
-    if not isinstance(data, dict):
-        raise ValueError("body must be a JSON object")
-    return data
-
-
-def _parse_stdout_json(stdout: str) -> dict[str, Any] | None:
-    start = stdout.find("{")
-    if start < 0:
-        return None
-    try:
-        data = json.loads(stdout[start:])
-    except ValueError:
-        return None
-    return data if isinstance(data, dict) else None
-
-
-def _run_exchange(payload: dict[str, Any], to: str) -> dict[str, Any]:
-    """Publish repos and ring the other side. ``to`` is ``canfar`` or ``desktop``."""
-    binary = _lab_binary()
-    if not binary:
-        raise SyncUnavailable("canfar-lab CLI not found on PATH in this image")
-    if not _SYNC_LOCK.acquire(blocking=False):
-        raise SyncBusy("an exchange is already running")
-    action = "sync_to_canfar" if to == "canfar" else "sync_to_desktop"
-    try:
-        args = [binary, "--json"]
-        if payload.get("dry_run"):
-            args.append("--dry-run")
-        args += ["sync", "exchange", "--to", to]
-        proc = subprocess.run(
-            args,
-            cwd=_studio_workdir() or None,
-            capture_output=True,
-            text=True,
-            timeout=_SYNC_TIMEOUT_SECONDS,
-            check=False,
-        )
+        upstream.sendall(("\r\n".join(lines) + "\r\n\r\n").encode("iso-8859-1"))
+        upstream.settimeout(None)
+        _splice(handler.connection, upstream)
+    except OSError:
+        pass
     finally:
-        _SYNC_LOCK.release()
-    parsed = _parse_stdout_json(proc.stdout or "")
-    result: dict[str, Any] = {
-        "ok": proc.returncode == 0,
-        "action": action,
-        "to": to,
-        "returncode": proc.returncode,
-        "cmd": args,
-    }
-    if parsed is not None:
-        result["report"] = parsed.get("published")
-        result["event"] = parsed.get("event")
-        result["mailbox"] = parsed.get("mailbox")
-        result["session_ready"] = parsed.get("session_ready")
-    else:
-        result["output"] = ((proc.stdout or "") + (proc.stderr or ""))[-4000:]
-    return result
+        with contextlib.suppress(OSError):
+            upstream.close()
+        handler.close_connection = True
 
 
-def run_desktop_sync(payload: dict[str, Any]) -> dict[str, Any]:
-    """Publish the session's repos and drop the desk an event (§6.2)."""
-    return _run_exchange(payload, "desktop")
+def wants_tabs(handler: BaseHTTPRequestHandler, tab_route: str) -> bool:
+    """Only top-level pages get the strip, never iframes or previewed user files.
 
-
-def run_sync_to_canfar(payload: dict[str, Any]) -> dict[str, Any]:
-    """Same Sync to CANFAR action the laptop desk runs."""
-    return _run_exchange(payload, "canfar")
-
-
-def _canfar_json(args: list[str]) -> tuple[int, Any, str]:
-    """Run ``canfar`` and parse stdout as JSON. ``(code, data, error)``."""
-    try:
-        proc = subprocess.run(
-            ["canfar", *args],
-            capture_output=True,
-            text=True,
-            timeout=180,
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        return 1, None, str(exc)
-    if proc.returncode != 0:
-        return proc.returncode, None, (proc.stderr or proc.stdout or "").strip()
-    try:
-        return 0, json.loads(proc.stdout or "null"), ""
-    except json.JSONDecodeError:
-        return 1, None, "canfar did not return JSON"
-
-
-def run_launch_studio(payload: dict[str, Any]) -> dict[str, Any]:
-    """Open a running Studio session for this image, or create one."""
-    del payload
-    image = os.environ.get(
-        "CANFAR_LAB_SESSION_IMAGE", "images.canfar.net/astroai/studio:latest"
-    ).strip()
-    name = os.environ.get("CANFAR_LAB_SESSION_NAME", "astroai-studio").strip() or "astroai-studio"
-    code, sessions, err = _canfar_json(["ps", "--kind", "contributed", "--output", "json"])
-    if code != 0:
-        return {"ok": False, "action": "launch_studio", "error": err}
-    if not isinstance(sessions, list):
-        sessions = []
-    for item in sessions:
-        if not isinstance(item, dict):
-            continue
-        if str(item.get("image") or "") != image:
-            continue
-        if str(item.get("status") or "") not in ("Running", "Pending"):
-            continue
-        sid = str(item.get("id") or "")
-        if not sid:
-            continue
-        try:
-            opened = subprocess.run(["canfar", "open", sid], check=False, timeout=180)
-            err = ""
-            code = opened.returncode
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            err = str(exc)
-            code = 1
-        return {
-            "ok": code == 0,
-            "action": "launch_studio",
-            "id": sid,
-            "created": False,
-            "error": err,
-        }
-    code, created, err = _canfar_json(
-        ["create", "--name", name, "--output", "json", "contributed", image]
+    Browsers send ``Sec-Fetch-Dest`` to secure origins only; without it, a
+    request that asks for HTML first is a page view.
+    """
+    dest = handler.headers.get("Sec-Fetch-Dest")
+    if dest:
+        return dest == "document"
+    return (handler.headers.get("Accept") or "").lstrip().startswith("text/html") or tab_route in (
+        "",
+        "/",
     )
-    if code != 0:
-        return {"ok": False, "action": "launch_studio", "error": err}
-    if not isinstance(created, list) or not created:
-        return {
-            "ok": False,
-            "action": "launch_studio",
-            "error": "canfar create returned no session id",
-        }
-    sid = str(created[0])
-    try:
-        opened = subprocess.run(["canfar", "open", sid], check=False, timeout=180)
-        err = ""
-        code = opened.returncode
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        err = str(exc)
-        code = 1
-    return {
-        "ok": code == 0,
-        "action": "launch_studio",
-        "id": sid,
-        "created": True,
-        "error": err,
-    }
 
 
-def _cluster_log_path() -> Path:
-    state = os.environ.get("ASTROAI_STUDIO_STATE", "").strip().rstrip("/")
-    base = Path(state) if state else Path(os.path.expanduser("~")) / ".canfar" / "lab"
-    return base / "logs" / "desk-cluster.log"
-
-
-def run_cluster(payload: dict[str, Any]) -> dict[str, Any]:
-    """`canfar lab cluster` from the session dock: status in-band, start/stop detached."""
-    binary = _lab_binary()
-    if not binary:
-        raise SyncUnavailable("canfar-lab CLI not found on PATH in this image")
-    mode = str(payload.get("mode") or "status").strip().lower()
-    if mode not in ("status", "start", "stop"):
-        raise ValueError(f"unknown cluster mode: {mode!r}")
-    if mode == "status":
-        proc = subprocess.run(
-            [binary, "cluster", "status", "--json"],
-            cwd=_studio_workdir() or None,
-            capture_output=True,
-            text=True,
-            timeout=_CLUSTER_TIMEOUT_SECONDS,
-            check=False,
-        )
-        parsed = _parse_stdout_json(proc.stdout or "")
-        return {
-            "ok": proc.returncode == 0,
-            "action": "cluster",
-            "mode": mode,
-            "returncode": proc.returncode,
-            "manager": parsed,
-            "output": None
-            if parsed is not None
-            else ((proc.stdout or "") + (proc.stderr or ""))[-2000:],
-        }
-    log_path = _cluster_log_path()
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    with log_path.open("ab") as log:
-        subprocess.Popen(
-            [binary, "cluster", mode],
-            cwd=_studio_workdir() or None,
-            stdout=log,
-            stderr=log,
-            start_new_session=True,
-        )
-    return {
-        "ok": True,
-        "action": "cluster",
-        "mode": mode,
-        "log": str(log_path),
-        "hint": "canfar lab cluster status",
-    }
-
-
-SYNC_ACTIONS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
-    "sync_to_desktop": run_desktop_sync,
-    "sync_to_canfar": run_sync_to_canfar,
-    "launch_studio": run_launch_studio,
-    "cluster": run_cluster,
-}
-
-
-def run_sync_action(action: str, payload: dict[str, Any]) -> dict[str, Any]:
-    runner = SYNC_ACTIONS.get(action)
-    if runner is None:
-        raise ValueError(f"unknown sync action: {action!r}")
-    return runner(payload)
-
-
-def _forward(
+def forward(
     handler: BaseHTTPRequestHandler,
-    host: str,
-    port: int,
+    tab: dict[str, Any],
     path: str,
     *,
-    body_filter: Callable[[bytes, str], bytes] | None = rewrite_body,
+    tab_route: str = "/",
+    set_cookies: list[str] | None = None,
 ) -> None:
-    if is_websocket_request(handler):
-        forward_websocket(handler, host, port, path)
+    headers = _upstream_headers(handler, tab)
+    conn_hdr = handler.headers.get("Connection", "").lower()
+    if "upgrade" in conn_hdr and handler.headers.get("Upgrade", "").lower() == "websocket":
+        forward_websocket(handler, tab["port"], path, headers)
         return
 
-    accept = handler.headers.get("Accept", "")
-    streaming = "text/event-stream" in accept or path.startswith("/api/events")
-
-    headers = _forward_headers(handler)
-    length = int(handler.headers.get("Content-Length", "0") or "0")
+    if "chunked" in handler.headers.get("Transfer-Encoding", "").lower():
+        _send(handler, 411, b"Send a Content-Length.", "text/plain; charset=utf-8")
+        return
+    try:
+        length = int(handler.headers.get("Content-Length", "0") or "0")
+    except ValueError:
+        length = -1
+    if length < 0:
+        _send(handler, 400, b"Bad Content-Length.", "text/plain; charset=utf-8")
+        return
     body = handler.rfile.read(length) if length > 0 else None
-
-    conn = HTTPConnection(host, port, timeout=600)
+    is_dsh = tab["prefix"] == "/"
+    conn = HTTPConnection(UPSTREAM_HOST, tab["port"], timeout=600)
     try:
         conn.request(handler.command, path, body=body, headers=headers)
         upstream = conn.getresponse()
     except OSError as exc:
-        service_name = "Service"
-        if host == TERMINAL_HOST and port == TERMINAL_PORT:
-            service_name = "Terminal"
-        elif host == JUPYTER_HOST and port == JUPYTER_PORT:
-            service_name = "JupyterLab"
-        elif host == MARIMO_HOST and port == MARIMO_PORT:
-            service_name = "Marimo"
-        elif host == VSCODE_HOST and port == VSCODE_PORT:
-            service_name = "VS Code"
-        elif host == WIZARD_HOST and port == WIZARD_PORT:
-            service_name = "Compute Hub"
-
-        if host == DSH_HOST and port == DSH_PORT and _is_index_path(path):
-            _send_html(handler, 200, STARTING_HTML)
-            handler.log_message('"starting" %s (dsh not ready: %s)', path, exc)
+        conn.close()
+        handler.log_message('"unavailable" %s %s (%s)', tab["id"], path, exc)
+        retry = "astroai-retry" in parse_qs(urlparse(handler.path).query)
+        if retry:
+            clear_tool_failure(tab)
+        failed = tool_failed_log(tab)
+        if failed:
+            # Gave up: only "Try again" restarts it, never a background request
+            # from a tab left open.
+            if wants_tabs(handler, tab_route):
+                page = inject_tabs(
+                    failed_html(tab["label"], failed, f"{tab_href(tab)}?astroai-retry=1"),
+                    "text/html",
+                    tab["id"],
+                )
+                _send(handler, 503, page, "text/html; charset=utf-8")
+            else:
+                _send(handler, 503, b"Could not start.", "text/plain; charset=utf-8")
             return
-
-        fallback = (
-            f"<!DOCTYPE html><html><body style='font-family:system-ui,-apple-system,sans-serif;padding:2rem;background:#181926;color:#cad3f5'>"
-            f"<h1>{service_name} unavailable</h1>"
-            f"<p>{service_name} is currently starting or not running on port {port}.</p>"
-            f"<p><a href='{PREFIX or '/'}' style='color:#89b4fa'>← Return to Studio</a></p>"
-            "</body></html>"
-        ).encode()
-        _send_html(handler, 503, fallback)
+        if is_dsh and is_index_path(handler.path):
+            _send(handler, 200, STARTING_HTML, "text/html; charset=utf-8")
+            return
+        first = not tool_ran_before(tab)
+        request_start(tab)
+        page = unavailable_html(tab["label"], first_start=first)
+        if wants_tabs(handler, tab_route):
+            page = inject_tabs(page, "text/html", tab["id"])
+        _send(handler, 503, page, "text/html; charset=utf-8")
         return
 
-    content_type = upstream.getheader("Content-Type") or ""
-    raw = b"" if streaming else upstream.read()
+    ctype = upstream.getheader("Content-Type") or ""
+    streaming = ctype.lower().startswith("text/event-stream") or (
+        "text/event-stream" in handler.headers.get("Accept", "")
+    )
 
-    if (
-        not streaming
-        and upstream.status == 401
-        and host == DSH_HOST
-        and port == DSH_PORT
-        and _is_index_path(path)
-        and not parse_qs(urlparse(path).query).get("token")
-    ):
-        loc = index_token_redirect("/", None)
+    # A stale dsh cookie answers 401 on the index: drop it and re-run Connect.
+    if is_dsh and upstream.status == 401 and is_index_path(handler.path):
+        loc = index_token_redirect(path, None)
         if loc:
-            handler.send_response(302, "Found")
-            handler.send_header("Location", loc)
-            handler.send_header("Cache-Control", "no-store")
-            for cookie in expire_dsh_auth_cookies(handler.headers.get("Cookie")):
-                handler.send_header("Set-Cookie", cookie)
-            handler.send_header("Content-Length", "0")
-            handler.end_headers()
-            handler.log_message('"auth-recovery" %s → %s', path, loc)
+            upstream.read()
             conn.close()
+            _redirect(handler, loc, expire_dsh_auth_cookies(handler.headers.get("Cookie")))
+            handler.log_message('"auth-recovery" %s', handler.path)
             return
 
-    if not streaming and body_filter is not None:
-        raw = body_filter(raw, content_type)
+    head = handler.command == "HEAD"
+    # Only HTML/JS/CSS is ever rewritten. Everything else (downloads, notebooks,
+    # images) streams through, so a large file never sits in the proxy's memory.
+    base_type = ctype.split(";", 1)[0].strip().lower()
+    if not streaming and base_type not in REWRITE_TYPES:
+        streaming = "passthrough"
+    raw = b""
+    if not streaming and not head:
+        try:
+            raw = upstream.read()
+        except OSError as exc:  # includes a read timeout
+            conn.close()
+            handler.log_message('"upstream read failed" %s %s (%s)', tab["id"], path, exc)
+            _send(handler, 502, b"Upstream read failed.", "text/plain; charset=utf-8")
+            return
+        if is_dsh:
+            raw = rewrite_dsh_body(raw, ctype)
+        elif tab["patch"] == "vscode" and 200 <= upstream.status < 300:
+            raw = patch_vscode(raw, ctype)
+        if 200 <= upstream.status < 300 and wants_tabs(handler, tab_route):
+            raw = inject_tabs(raw, ctype, tab["id"])
 
     handler.send_response(upstream.status, upstream.reason)
     for key, value in upstream.getheaders():
@@ -1480,197 +936,138 @@ def _forward(
         if lk in HOP_BY_HOP or lk == "host":
             continue
         if lk == "location":
-            value = rewrite_location(value)
-        if lk == "set-cookie":
+            value = tab_location(tab, value)
+        elif lk == "set-cookie" and is_dsh:
             value = rewrite_set_cookie(value)
-        if lk == "content-length" and not streaming:
-            continue
         handler.send_header(key, value)
-    if not streaming:
+    for cookie in set_cookies or ():
+        handler.send_header("Set-Cookie", cookie)
+    if streaming == "passthrough":
+        if upstream.getheader("Content-Length") is not None:
+            handler.send_header("Content-Length", upstream.getheader("Content-Length"))
+    elif streaming:
+        handler.send_header("Cache-Control", "no-cache")
+        handler.send_header("X-Accel-Buffering", "no")
+    elif head:
+        if upstream.getheader("Content-Length") is not None:
+            handler.send_header("Content-Length", upstream.getheader("Content-Length"))
+    else:
         handler.send_header("Content-Length", str(len(raw)))
     handler.send_header("Connection", "close")
     handler.end_headers()
+    handler.close_connection = True
 
-    if handler.command == "HEAD":
-        conn.close()
-        return
-
-    if streaming:
-        try:
-            while True:
-                chunk = upstream.read(8192)
-                if not chunk:
-                    break
-                handler.wfile.write(chunk)
-                handler.wfile.flush()
-        except (BrokenPipeError, ConnectionResetError):
-            pass
-    else:
-        with contextlib.suppress(BrokenPipeError, ConnectionResetError):
+    try:
+        if handler.command == "HEAD":
+            return
+        if not streaming:
             handler.wfile.write(raw)
-    conn.close()
+            return
+        size = 1 << 16 if streaming == "passthrough" else 8192
+        while True:
+            chunk = upstream.read1(size) if hasattr(upstream, "read1") else upstream.read(size)
+            if not chunk:
+                break
+            handler.wfile.write(chunk)
+            if streaming != "passthrough":
+                handler.wfile.flush()
+    except (BrokenPipeError, ConnectionResetError, TimeoutError):
+        pass  # client gone, or an event stream idle past the upstream timeout
+    finally:
+        conn.close()
 
 
-class StudioProxyHandler(BaseHTTPRequestHandler):
+class DshProxyHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
-    def log_message(self, fmt: str, *args) -> None:
-        sys.stderr.write("studio-proxy: %s\n" % (fmt % args))
+    def log_message(self, fmt: str, *args: Any) -> None:
+        sys.stderr.write("dsh-proxy: %s\n" % (fmt % args))
 
-    def _proxy(self) -> None:
-        if self.command in ("GET", "HEAD"):
-            loc = index_token_redirect(self.path, self.headers.get("Cookie"))
-            if loc is not None:
-                self.send_response(302, "Found")
-                self.send_header("Location", loc)
-                self.send_header("Cache-Control", "no-store")
-                self.send_header("Content-Length", "0")
-                self.end_headers()
-                self.log_message('"token-redirect" %s → %s', self.path, loc)
-                return
-            if (
-                _is_index_path(self.path)
-                and not has_dsh_auth_cookie(self.headers.get("Cookie"))
-                and not read_launch_token()
-            ):
-                _send_html(self, 200, STARTING_HTML)
-                self.log_message('"starting" %s (waiting for dsh token)', self.path)
-                return
-
+    def _handle(self) -> None:
         public = upstream_path(self.path)
-        route = urlparse(public).path or "/"
+        parsed = urlparse(public)
+        route = parsed.path or "/"
 
-        # API Status Endpoint
-        if route == "/api/studio/status":
-            _send_json(self, 200, get_studio_status())
+        if route == STATUS_ROUTE:
+            _send(self, 200, json.dumps(studio_status()).encode(), "application/json")
             return
-        # Desk dock state (GET) + Desktop sync / cluster actions (POST)
-        if route == _SYNC_ROUTE or route.startswith(_SYNC_ROUTE + "/"):
-            self._studio_sync(route)
-            return
-        asset = STUDIO_ASSETS.get(route)
-        if asset and self.command in ("GET", "HEAD"):
-            _send_asset(self, *asset)
-            return
-
-        # Trailing slash redirects for subservices
-        for bare in ("/terminal", "/jupyter", "/marimo", "/vscode", "/hub"):
-            if route == bare:
-                target = f"{PREFIX}{bare}/" if PREFIX else f"{bare}/"
-                qs = urlparse(public).query
-                if qs:
-                    target = f"{target}?{qs}"
-                self.send_response(302, "Found")
-                self.send_header("Location", target)
-                self.send_header("Content-Length", "0")
-                self.end_headers()
+        if route == LOGO_ROUTE and self.command in ("GET", "HEAD"):
+            try:
+                body = Path(LOGO_FILE).read_bytes()
+            except OSError:
+                _send(self, 404, b"no logo", "text/plain")
                 return
-
-        # Terminal (Ghostty-web)
-        for term_prefix in ("/terminal", TERMINAL_MOUNT):
-            if route == term_prefix or route.startswith(term_prefix + "/"):
-                rest = route[len(term_prefix) :] or "/"
-                qs = urlparse(public).query
-                if qs:
-                    rest = f"{rest}?{qs}" if "?" not in rest else f"{rest}&{qs}"
-                _forward(self, TERMINAL_HOST, TERMINAL_PORT, rest, body_filter=inject_corner_dock)
-                return
-
-        # JupyterLab / Marimo / VS Code serve under the full session base path
-        # (startup-studio.sh passes /session/contrib/<id>/<tool>), so re-add PREFIX.
-        prefixed = f"{PREFIX}{public}"
-
-        # JupyterLab
-        if route == "/jupyter" or route.startswith("/jupyter/"):
-            _forward(self, JUPYTER_HOST, JUPYTER_PORT, prefixed, body_filter=inject_dock)
+            self.send_response(200)
+            self.send_header("Content-Type", "image/png")
+            self.send_header("Cache-Control", "max-age=86400")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            if self.command != "HEAD":
+                self.wfile.write(body)
+            return
+        if route == ASSET_ROUTE and self.command in ("GET", "HEAD"):
+            self.send_response(200)
+            body = TABS_JS.encode()
+            self.send_header("Content-Type", "text/javascript; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            if self.command != "HEAD":
+                self.wfile.write(body)
             return
 
-        # Marimo
-        if route == "/marimo" or route.startswith("/marimo/"):
-            _forward(self, MARIMO_HOST, MARIMO_PORT, prefixed, body_filter=inject_dock)
+        tab = match_tab(route)
+        if tab["prefix"] == "/":
+            if self.command in ("GET", "HEAD"):
+                loc = index_token_redirect(self.path, self.headers.get("Cookie"))
+                if loc is not None:
+                    _redirect(self, loc)
+                    return
+                if (
+                    is_index_path(self.path)
+                    and not has_dsh_auth_cookie(self.headers.get("Cookie"))
+                    and not read_launch_token()
+                    and not tool_failed_log(tab)  # forward() shows "could not start"
+                ):
+                    _send(self, 200, STARTING_HTML, "text/html; charset=utf-8")
+                    return
+            extra: list[str] = []
+            if (
+                self.command == "GET"
+                and is_index_path(self.path)
+                and has_dsh_auth_cookie(self.headers.get("Cookie"))
+                and self.headers.get("Sec-Fetch-Dest", "document") == "document"
+            ):
+                loc, remember = onboarding_redirect(self)
+                if loc:
+                    _redirect(self, loc, [onboarded_cookie()])
+                    return
+                if remember:
+                    extra.append(onboarded_cookie())
+            forward(self, tab, public, tab_route=route, set_cookies=extra)
             return
 
-        # VS Code (OpenVSCode Server)
-        if route == "/vscode" or route.startswith("/vscode/"):
-            _forward(self, VSCODE_HOST, VSCODE_PORT, prefixed, body_filter=inject_vscode)
+        p = tab["prefix"]
+        if route == p:
+            query = f"?{parsed.query}" if parsed.query else ""
+            _redirect(self, f"{PREFIX}{p}/{query}")
             return
+        rest = route[len(p) :] or "/"
+        if tab["strip"]:
+            target = urlunparse(("", "", rest, "", parsed.query, ""))
+        else:
+            target = f"{PREFIX}{public}"
+        forward(self, tab, target, tab_route=rest)
 
-        # Compute & Agent Wizard Hub
-        for hub_prefix in ("/hub", WIZARD_MOUNT):
-            if route == hub_prefix or route.startswith(hub_prefix + "/"):
-                rest = route[len(hub_prefix) :] or "/"
-                qs = urlparse(public).query
-                if qs:
-                    rest = f"{rest}?{qs}" if "?" not in rest else f"{rest}&{qs}"
-                _forward(self, WIZARD_HOST, WIZARD_PORT, rest, body_filter=inject_dock)
-                return
-
-        # Default: Forward to DSH
-        _forward(self, DSH_HOST, DSH_PORT, public)
-
-    def _studio_sync(self, route: str) -> None:
-        if not sync_authorized(self):
-            _send_json(self, 403, {"ok": False, "error": "forbidden"})
-            return
-        if self.command in ("GET", "HEAD"):
-            _send_json(self, 200, get_sync_state())
-            return
-        if self.command != "POST":
-            _send_json(self, 405, {"ok": False, "error": "method not allowed"})
-            return
-        action = route[len(_SYNC_ROUTE) :].strip("/") or "sync_to_desktop"
-        self.log_message('"studio-sync" %s %s', self.command, route)
-        try:
-            payload = read_json_body(self)
-            result = run_sync_action(action, payload)
-        except SyncBusy as exc:
-            _send_json(self, 409, {"ok": False, "error": str(exc)})
-            return
-        except SyncUnavailable as exc:
-            _send_json(self, 503, {"ok": False, "error": str(exc)})
-            return
-        except ValueError as exc:
-            _send_json(self, 400, {"ok": False, "error": str(exc)})
-            return
-        except subprocess.TimeoutExpired as exc:
-            _send_json(self, 504, {"ok": False, "error": f"timed out after {exc.timeout}s"})
-            return
-        except OSError as exc:
-            _send_json(
-                self, 500, {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
-            )
-            return
-        _send_json(self, 200 if result.get("ok") else 500, result)
-
-    def do_GET(self) -> None:
-        self._proxy()
-
-    def do_POST(self) -> None:
-        self._proxy()
-
-    def do_PUT(self) -> None:  # noqa: N802
-        self._proxy()
-
-    def do_PATCH(self) -> None:  # noqa: N802
-        self._proxy()
-
-    def do_DELETE(self) -> None:  # noqa: N802
-        self._proxy()
-
-    def do_HEAD(self) -> None:  # noqa: N802
-        self._proxy()
-
-    def do_OPTIONS(self) -> None:  # noqa: N802
-        self._proxy()
+    do_GET = do_POST = do_PUT = do_PATCH = do_DELETE = do_HEAD = do_OPTIONS = _handle  # noqa: N815
 
 
 def main() -> int:
-    server = ThreadingHTTPServer(("0.0.0.0", PUBLIC_PORT), StudioProxyHandler)
+    server = ThreadingHTTPServer(("0.0.0.0", PUBLIC_PORT), DshProxyHandler)
+    server.daemon_threads = True
+    routes = " ".join(f"{t['prefix']}→:{t['port']}" for t in TABS)
     sys.stderr.write(
-        f"studio-proxy: listening 0.0.0.0:{PUBLIC_PORT} → dsh={DSH_HOST}:{DSH_PORT} "
-        f"terminal={TERMINAL_HOST}:{TERMINAL_PORT} jupyter={JUPYTER_HOST}:{JUPYTER_PORT} "
-        f"marimo={MARIMO_HOST}:{MARIMO_PORT} vscode={VSCODE_HOST}:{VSCODE_PORT} "
-        f"hub={WIZARD_HOST}:{WIZARD_PORT} prefix={PREFIX or '(none)'}\n"
+        f"dsh-proxy: listening 0.0.0.0:{PUBLIC_PORT} {routes} prefix={PREFIX or '(none)'}\n"
     )
     with contextlib.suppress(KeyboardInterrupt):
         server.serve_forever()

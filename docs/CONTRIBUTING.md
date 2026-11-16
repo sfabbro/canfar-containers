@@ -66,7 +66,7 @@ projects. Slim `ray-base` (workers only) stays minimal — see [RAY.md](RAY.md).
 ## Local build and test
 
 ```bash
-make build-studio          # or build/<name>; also build-dsh, build-marimo, …
+make build-studio          # or build/<name>; also build-marimo, …
 make build-all
 ./scripts/test-local.sh studio 5000
 ./scripts/test-local.sh notebook 8888
@@ -88,8 +88,8 @@ uv run python -c "print('ok')"
 are unpinned. `config/ray-deps.txt` pins **only** `ray[default]==…` so
 manager and worker share one Ray version (Ray cluster ABI); bump it and
 rebuild both with `make build-ray`. Dockerfiles `ADD` the canfar-lab PyPI
-JSON so a new release rebuilds that layer. Optional local wheel for `dsh`:
-bake with `--set dsh.contexts.canfar-lab-dist=../canfar-lab/dist`.
+JSON so a new release rebuilds that layer. Optional local wheel for `studio`:
+bake with `--set studio.contexts.canfar-lab-dist=../canfar-lab/dist`.
 
 ```bash
 cd ../canfar-lab && uv run pytest -q

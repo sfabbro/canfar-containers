@@ -2,7 +2,7 @@
 #
 # Per container:  make build-<name>   or   make build/<name>
 # Families:       make build-all | build-ray | build-improc | build-specproc
-# dsh is buildable but not in build-all until verified on CANFAR.
+# Studio (studio / improc-studio / specproc-studio) installs the newest dsh at every build.
 
 SHELL := bash
 OWNER ?= astroai
@@ -33,7 +33,7 @@ DEFAULT_IMAGES := \
 	specproc-terminal specproc-notebook
 
 # Buildable Harbor images not in build-all (bake targets exist)
-EXTRA_IMAGES := dsh marimo vscode
+EXTRA_IMAGES := marimo vscode
 
 ALL_IMAGES := $(DEFAULT_IMAGES) $(EXTRA_IMAGES)
 
@@ -59,7 +59,6 @@ help:
 	@echo "  make build-improc           improc family (+ base via bake)"
 	@echo "  make build-specproc         specproc family (+ base via bake)"
 	@echo "  make build-<name>           one image (+ parents); also build/<name>"
-	@echo "  make build-dsh              astroai/dsh (not in build-all yet)"
 	@echo "  make build/improc           single improc image (build-improc = family)"
 	@echo ""
 	@echo "  Images: $(ALL_IMAGES)"
@@ -72,8 +71,7 @@ help:
 	@echo ""
 	@echo "Test"
 	@echo "  make test-local             verify DEFAULT_IMAGES locally"
-	@echo "  make test-studio-local      Studio stamp+dangling .dsh → token → 200"
-	@echo "  make test-dsh-local         dsh: Connect, Agent + Lab tabs, onboarding"
+	@echo "  make test-studio-local      Studio: Connect, Chat + Settings tabs, onboarding, save/restore"
 	@echo "  make test-improc-local | test-specproc-local | test-base-local"
 	@echo "  make test-agent-local       agent command matrix (all session images)"
 	@echo "  make test-ray [SMOKE=1]     Ray container + local cluster + UI"
@@ -82,16 +80,15 @@ help:
 	@echo "  make test-host              docker-free host self-checks"
 	@echo ""
 	@echo "Lint / sync"
-	@echo "  make lint                   lint-doc-quota + desk-assets + test-host"
-	@echo "  make sync-marimo-starter | sync-notebook-starters | sync-desk-assets"
-	@echo "  make desk-assets-check | lint-doc-quota"
+	@echo "  make lint                   lint-doc-quota + test-host"
+	@echo "  make sync-marimo-starter | sync-notebook-starters | lint-doc-quota"
 	@echo ""
 	@echo "  make clean | clean-all"
 	@echo "  make harbor-cleanup       DRY_RUN=1 preview; omit DRY_RUN to delete stale Harbor tags"
 	@echo "  OWNER=$(OWNER)  REGISTRY=$(REGISTRY)  BUILD_TAG=$(BUILD_TAG)  TAG=$(TAG)"
 
 # ---------------------------------------------------------------------------
-# Sync (starters / desk assets from sibling canfar-lab)
+# Sync (starters from sibling canfar-lab)
 # ---------------------------------------------------------------------------
 
 ASTROAI_LAB_DIR ?= $(shell test -d ../canfar-lab && echo ../canfar-lab || echo ../astroai-lab)
@@ -99,7 +96,7 @@ ASTROAI_LAB_STARTER ?= $(ASTROAI_LAB_DIR)/src/canfar_lab/data/notebooks/starter.
 ASTROAI_LAB_IPYNB ?= $(ASTROAI_LAB_DIR)/src/canfar_lab/data/notebooks/starter.ipynb
 ASTROAI_LAB_RAY_NB ?= $(ASTROAI_LAB_DIR)/src/canfar_lab/data/notebooks/ray_train.ipynb
 
-.PHONY: sync-marimo-starter sync-notebook-starters sync-desk-assets desk-assets-check
+.PHONY: sync-marimo-starter sync-notebook-starters
 sync-marimo-starter: ## copy marimo starter.py from sibling astroai-lab checkout
 	@test -f "$(ASTROAI_LAB_STARTER)" || { echo "missing $(ASTROAI_LAB_STARTER)"; exit 1; }
 	cp "$(ASTROAI_LAB_STARTER)" config/notebooks/starter.py
@@ -111,14 +108,6 @@ sync-notebook-starters: sync-marimo-starter ## copy all lab notebooks into confi
 	cp "$(ASTROAI_LAB_IPYNB)" config/notebooks/starter.ipynb
 	cp "$(ASTROAI_LAB_RAY_NB)" config/notebooks/ray_train.ipynb
 	@echo "updated config/notebooks/{starter.ipynb,ray_train.ipynb}"
-
-sync-desk-assets: ## vendor the Desk dock from sibling canfar-lab + refresh the lock
-	@chmod +x scripts/sync-desk-assets.sh
-	@./scripts/sync-desk-assets.sh
-
-desk-assets-check: ## fail if the vendored Desk dock drifts from config/desk-assets.lock
-	@chmod +x scripts/sync-desk-assets.sh
-	@./scripts/sync-desk-assets.sh --check
 
 # ---------------------------------------------------------------------------
 # Build
@@ -143,11 +132,13 @@ build-specproc: ## build specproc family (+ base)
 # Slash form covers every bake target, including internals and improc/specproc singles.
 HYPHEN_BUILD_IMAGES := $(filter-out improc specproc,$(ALL_IMAGES))
 
-# The dsh image takes the newest dsh release on every build (no pin). Resolving
+# Studio images take the newest dsh release on every build (no pin). Resolving
 # it here gives bake an exact version, so a cached layer is reused only while
-# that version is still the newest. `make build-dsh DSH_VERSION=x.y.z` builds a
-# given one; with npm unreachable the build resolves it itself ("newest").
-build-dsh build/dsh: export DSH_VERSION ?= $(shell ./scripts/dsh-newest.sh 2>/dev/null || echo newest)
+# that version is still the newest. `make build-studio DSH_VERSION=x.y.z` builds
+# a given one; with npm unreachable the build resolves it itself ("newest").
+STUDIO_BUILDS := build-all build-improc build-specproc release-push release-push-improc \
+	release-push-specproc $(foreach i,studio improc-studio specproc-studio,build-$(i) build/$(i))
+$(STUDIO_BUILDS): export DSH_VERSION ?= $(shell ./scripts/dsh-newest.sh 2>/dev/null || echo newest)
 
 define BUILD_HYPHEN
 .PHONY: build-$(1)
@@ -269,7 +260,7 @@ release-push-specproc: ## bake+push specproc family as :$(TAG) and :latest
 # Local tests
 # ---------------------------------------------------------------------------
 
-.PHONY: test-local test-agent-local test-studio-local test-dsh-local test-ray
+.PHONY: test-local test-agent-local test-studio-local test-ray
 .PHONY: test-improc-local test-specproc-local test-base-local test-host
 
 test-local: ## verify session images (parallel)
@@ -293,13 +284,9 @@ test-agent-local: ## agent command matrix on all session images (local, mounted 
 	@TAG=$(BUILD_TAG) ./scripts/test-agent-local.sh $(if $(IMAGE),$(IMAGE),$(DEFAULT_IMAGES))
 	@echo "agent-local E2E passed for $(if $(IMAGE),$(IMAGE),all default images)"
 
-test-studio-local: ## Studio Connect regression: stamp + dangling ~/.dsh → token → 200
+test-studio-local: ## Studio: Connect token, Chat + Settings tabs, Lab auth via proxy, onboarding, save/restore
 	@chmod +x scripts/test-studio-local.sh
 	@TAG=$(BUILD_TAG) ./scripts/test-studio-local.sh
-
-test-dsh-local: ## dsh image: Connect token, Agent + Lab tabs, Lab auth via proxy, onboarding
-	@chmod +x scripts/test-dsh-local.sh
-	@TAG=$(BUILD_TAG) ./scripts/test-dsh-local.sh
 
 test-ray: build-ray build-base ## Ray image checks + local cluster join + UI
 	chmod +x scripts/test-ray-*.sh scripts/test-astroai-lab-loop.sh scripts/ray-head-start.sh \
@@ -390,7 +377,6 @@ test-host: ## docker-free checks (selfchecks + agent-wizard unit tests)
 	python3 scripts/lib/test_agent_wizard_verbs.py
 	python3 scripts/lib/test_orx_canfar_proxy.py
 	python3 scripts/lib/test_studio_canfar_proxy.py
-	python3 scripts/lib/test_dsh_canfar_proxy.py
 	python3 scripts/lib/test_astroai_html_proxy.py
 	python3 scripts/lib/test_session_title.py
 	python3 scripts/lib/test_canfar_marimo_env.py
@@ -398,9 +384,8 @@ test-host: ## docker-free checks (selfchecks + agent-wizard unit tests)
 	@! grep -E 'format = "in ' config/starship.toml
 	@grep -q 'disabled = true' config/starship.toml
 
-lint: ## doc-quota guard + dock-asset drift + docker-free host tests
+lint: ## doc-quota guard + docker-free host tests
 	$(MAKE) lint-doc-quota
-	$(MAKE) desk-assets-check
 	$(MAKE) test-host
 
 ray-launch:

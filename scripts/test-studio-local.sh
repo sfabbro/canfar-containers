@@ -1,213 +1,220 @@
 #!/bin/bash
-# Local Studio boot regression (Skaha-shaped volumes + Connect URL path).
+# Local astroai/studio boot check, Skaha-shaped (session path, /arc home, /scratch).
 #
-# Covers the stamp-skip failure mode: after agent-setup-stamp exists,
-# dangling ~/.dsh/{sessions,storages} scratch links must be restored so dsh
-# emits a web token (otherwise Connect 401s).
+# Session 1 (new user): Connect → dsh token → Chat page with tab strip;
+#   /lab/ page and onboarding say "new"; Lab refuses requests that bypass the
+#   proxy; save $SCRATCH/src to a snapshot through the proxy.
+# Session 2 (returning user, same home, empty scratch): the snapshot comes
+#   back by itself and onboarding says "returning".
 #
-# Usage:
-#   TAG=local ./scripts/test-studio-local.sh
-#   make test-studio-local BUILD_TAG=local
+# Usage: TAG=local ./scripts/test-studio-local.sh   (make test-studio-local BUILD_TAG=local)
 set -euo pipefail
 
 OWNER="${OWNER:-astroai}"
 REGISTRY="${REGISTRY:-images.canfar.net}"
 TAG="${TAG:-${BUILD_TAG:-local}}"
 IMAGE="${REGISTRY}/${OWNER}/studio:${TAG}"
-HOST_PORT="${STUDIO_TEST_PORT:-15050}"
-
-echo "Studio local boot regression against ${IMAGE}"
-
-FAKE_HOME="$(mktemp -d -p "${TMPDIR:-/tmp}" studiohome.XXXX)"
-FAKE_SCRATCH="$(mktemp -d -p "${TMPDIR:-/tmp}" studioscratch.XXXX)"
-FAKE_SRC="$(mktemp -d -p "${TMPDIR:-/tmp}" studiosrc.XXXX)"
+HOST_PORT="${STUDIO_TEST_PORT:-15060}"
+SESSION_ID="studio-local-$$"
+BASE="http://127.0.0.1:${HOST_PORT}/session/contrib/${SESSION_ID}"
 NAME="studio-local-test-$$"
+
+WORKDIR="$(mktemp -d -p "${TMPDIR:-/tmp}" studiotest.XXXX)"
+FAKE_HOME="${WORKDIR}/home"
+mkdir -p "${FAKE_HOME}" "${WORKDIR}/scratch1" "${WORKDIR}/scratch2"
+chmod -R a+rwX "${WORKDIR}"
+JAR="${WORKDIR}/cookies"
 cleanup() {
     docker rm -f "${NAME}" >/dev/null 2>&1 || true
-    rm -rf "${FAKE_HOME}" "${FAKE_SCRATCH}" "${FAKE_SRC}"
+    # Files written by the container user; remove from inside a container.
+    docker run --rm -v "${WORKDIR}:/w" --entrypoint rm "${IMAGE}" -rf /w/home /w/scratch1 /w/scratch2 \
+        >/dev/null 2>&1 || true
+    rm -rf "${WORKDIR}"
 }
 trap cleanup EXIT
 
-chmod -R a+rwX "${FAKE_HOME}" "${FAKE_SCRATCH}" "${FAKE_SRC}"
-mkdir -p "${FAKE_HOME}/.dsh" "${FAKE_HOME}/.astroai/lab"
-# Prior-session state: stamp present + dangling dsh scratch links.
-ln -s /scratch/.cache-old/data/_dsh/sessions "${FAKE_HOME}/.dsh/sessions"
-ln -s /scratch/.cache-old/data/_dsh/storages "${FAKE_HOME}/.dsh/storages"
-date -u +%Y-%m-%dT%H:%M:%SZ >"${FAKE_HOME}/.astroai/lab/agent-setup-stamp"
-echo 'agent-default-model: {}' >"${FAKE_HOME}/.dsh/settings.yaml"
+fail() {
+    echo "FAIL: $*" >&2
+    docker logs "${NAME}" 2>&1 | tail -30 >&2 || true
+    docker exec "${NAME}" sh -c 'tail -n 20 /scratch/.dsh-*/logs/*.log' >&2 2>/dev/null || true
+    exit 1
+}
+req() { curl -sS --max-time 20 -H 'Host: workloads.canfar.net' "$@"; }
 
-SESSION_ID="studio-local-$$"
-docker run --rm --name "${NAME}" -d \
-    -u "$(id -u):$(id -g)" \
-    -e HOME=/arc/home/testuser \
-    -e USER=testuser \
-    -e SCRATCH=/scratch \
-    -e WORK=/srcdir \
-    -e SRCDIR=/srcdir \
-    -e skaha_sessionid="${SESSION_ID}" \
-    -e ASTROAI_SESSION_KIND=studio \
-    -e CANFAR_LAB_WORK_ON_SCRATCH=0 \
-    -e CANFAR_LAB_DESK=1 \
-    -p "${HOST_PORT}:5000" \
-    -v "${FAKE_HOME}:/arc/home/testuser" \
-    -v "${FAKE_SCRATCH}:/scratch" \
-    -v "${FAKE_SRC}:/srcdir" \
-    "${IMAGE}" >/dev/null
-
-ready=0
-code=000
-for _ in $(seq 1 90); do
-    if ! docker ps --filter "name=^/${NAME}$" -q | grep -q .; then
-        echo "FAIL: container exited before ready" >&2
-        docker logs "${NAME}" 2>&1 | tail -40 >&2 || true
-        exit 1
-    fi
-    code="$(
-        curl -sS -o /dev/null -w '%{http_code}' --max-time 2 \
-            -H 'Host: workloads.canfar.net' \
-            "http://127.0.0.1:${HOST_PORT}/session/contrib/${SESSION_ID}/" \
-            2>/dev/null || echo 000
-    )"
-    # Early :5000 bind serves STARTING_HTML as 200 before dsh has a token.
-    # Ready means token redirect (302) or boot.log captured the web token.
-    if [[ "${code}" == "302" ]]; then
-        ready=1
-        break
-    fi
-    if grep -q 'dsh web token captured for Skaha Connect redirect' \
-            "${FAKE_HOME}/.astroai/lab/boot.log" 2>/dev/null; then
-        ready=1
-        break
-    fi
-    sleep 2
-done
-
-if [[ "${ready}" != "1" ]]; then
-    echo "FAIL: Connect path never answered 302/200 (last=${code})" >&2
-    docker logs "${NAME}" 2>&1 | tail -50 >&2 || true
-    exit 1
-fi
-
-BOOT="${FAKE_HOME}/.astroai/lab/boot.log"
-RUNTIME="${FAKE_HOME}/.astroai/lab/agent-runtime.log"
-if ! grep -q 'dsh web token captured for Skaha Connect redirect' "${BOOT}" 2>/dev/null; then
-    echo "FAIL: boot.log missing dsh web token capture" >&2
-    tail -40 "${BOOT}" >&2 || true
-    exit 1
-fi
-if ! grep -q 'restore:\.dsh/sessions\|restore:\.dsh/storages' "${RUNTIME}" 2>/dev/null; then
-    echo "FAIL: agent layout did not restore durable ~/.dsh dirs" >&2
-    cat "${RUNTIME}" >&2 || true
-    exit 1
-fi
-if [[ -L "${FAKE_HOME}/.dsh/sessions" || -L "${FAKE_HOME}/.dsh/storages" ]]; then
-    echo "FAIL: ~/.dsh sessions/storages still symlinks after layout" >&2
-    ls -la "${FAKE_HOME}/.dsh" >&2
-    exit 1
-fi
-if [[ ! -d "${FAKE_HOME}/.dsh/sessions" || ! -d "${FAKE_HOME}/.dsh/storages" ]]; then
-    echo "FAIL: ~/.dsh sessions/storages not real directories" >&2
-    ls -la "${FAKE_HOME}/.dsh" >&2
-    exit 1
-fi
-
-TOK="$(
-    curl -sS -D- -o /dev/null --max-time 5 \
-        -H 'Host: workloads.canfar.net' \
-        "http://127.0.0.1:${HOST_PORT}/session/contrib/${SESSION_ID}/" \
-        | grep -oE 'token=[A-Za-z0-9_-]+' | head -1 | cut -d= -f2-
-)"
-if [[ -z "${TOK}" ]]; then
-    echo "FAIL: token redirect Location missing" >&2
-    exit 1
-fi
-
-rm -f /tmp/studio-local-cj.$$
-curl -sS -c "/tmp/studio-local-cj.$$" -o /dev/null --max-time 10 \
-    -H 'Host: workloads.canfar.net' \
-    "http://127.0.0.1:${HOST_PORT}/session/contrib/${SESSION_ID}/?token=${TOK}"
-page="$(
-    curl -sS -b "/tmp/studio-local-cj.$$" -o /tmp/studio-local-page.$$ -w '%{http_code}' \
-        --max-time 10 -H 'Host: workloads.canfar.net' \
-        "http://127.0.0.1:${HOST_PORT}/session/contrib/${SESSION_ID}/"
-)"
-rm -f "/tmp/studio-local-cj.$$"
-if [[ "${page}" != "200" ]]; then
-    echo "FAIL: authenticated index returned ${page}" >&2
-    exit 1
-fi
-if ! grep -q 'data-astroai-proxy-rev=' /tmp/studio-local-page.$$; then
-    echo "FAIL: HTML missing studio proxy fingerprint" >&2
-    exit 1
-fi
-if ! grep -q 'astroai-dock-revision' /tmp/studio-local-page.$$ \
-    || ! grep -q 'id="astroai-dock-config"' /tmp/studio-local-page.$$; then
-    echo "FAIL: dsh page missing the vendored Desk dock" >&2
-    exit 1
-fi
-DOCK_TOKEN="$(
-    grep -o '"token": *"[^"]*"' /tmp/studio-local-page.$$ | head -1 \
-        | sed 's/.*"token": *"//; s/"$//'
-)"
-if [[ -z "${DOCK_TOKEN}" ]]; then
-    echo "FAIL: Desk dock config carries no bearer token" >&2
-    exit 1
-fi
-
-# Desk sync API (docs/STUDIO.md § Desk Sync): state + single-flight dry-run.
-SYNC_CODE="$(
-    curl -sS -o /tmp/studio-local-sync.$$ -w '%{http_code}' --max-time 10 \
-        -H 'Host: workloads.canfar.net' -H "X-Desk-Token: ${DOCK_TOKEN}" \
-        "http://127.0.0.1:${HOST_PORT}/session/contrib/${SESSION_ID}/api/studio/sync"
-)"
-if [[ "${SYNC_CODE}" != "200" ]] || ! grep -q '"mode": "session"' /tmp/studio-local-sync.$$; then
-    echo "FAIL: /api/studio/sync state returned ${SYNC_CODE}" >&2
-    cat /tmp/studio-local-sync.$$ >&2 || true
-    exit 1
-fi
-SYNC_POST="$(
-    curl -sS -o /tmp/studio-local-sync.$$ -w '%{http_code}' --max-time 120 \
-        -H 'Host: workloads.canfar.net' -H "X-Desk-Token: ${DOCK_TOKEN}" \
-        -H 'Content-Type: application/json' -d '{"dry_run": true}' \
-        "http://127.0.0.1:${HOST_PORT}/session/contrib/${SESSION_ID}/api/studio/sync/sync_to_desktop"
-)"
-if [[ "${SYNC_POST}" != "200" ]] || ! grep -q '"action": "sync_to_desktop"' /tmp/studio-local-sync.$$; then
-    echo "FAIL: /api/studio/sync/sync_to_desktop returned ${SYNC_POST}" >&2
-    cat /tmp/studio-local-sync.$$ >&2 || true
-    exit 1
-fi
-rm -f /tmp/studio-local-sync.$$ /tmp/studio-local-page.$$
-
-# Tools bound to 127.0.0.1 must still accept the public Host the proxy forwards
-# (Jupyter's local-host check answered 403 to every CANFAR request).
-for tool in jupyter/lab jupyter/api/status marimo/ vscode/ terminal/ hub/; do
-    code=000
-    for _ in $(seq 1 45); do
-        code="$(
-            curl -sS -o /dev/null -w '%{http_code}' --max-time 5 \
-                -H 'Host: workloads.canfar.net' \
-                "http://127.0.0.1:${HOST_PORT}/session/contrib/${SESSION_ID}/${tool}" \
-                2>/dev/null || echo 000
-        )"
-        [[ "${code}" == "200" || "${code}" == "403" ]] && break
+start_session() {
+    local scratch="$1"
+    docker rm -f "${NAME}" >/dev/null 2>&1 || true
+    docker run -d --name "${NAME}" -u "$(id -u):$(id -g)" \
+        -e HOME=/arc/home/testuser -e USER=testuser -e SCRATCH=/scratch \
+        -e skaha_sessionid="${SESSION_ID}" \
+        -p "${HOST_PORT}:5000" \
+        -v "${FAKE_HOME}:/arc/home/testuser" -v "${scratch}:/scratch" \
+        "${IMAGE}" >/dev/null
+    local code=000
+    for _ in $(seq 1 120); do
+        docker ps -q --filter "name=^/${NAME}$" | grep -q . || fail "container exited during boot"
+        code="$(req -o /dev/null -w '%{http_code}' "${BASE}/" 2>/dev/null || echo 000)"
+        [[ "${code}" == "302" ]] && break
         sleep 2
     done
-    if [[ "${code}" != "200" ]]; then
-        echo "FAIL: /${tool} via public Host returned ${code}" >&2
-        docker exec "${NAME}" sh -c 'tail -n 5 /tmp/.studio-*/logs/*.log' >&2 || true
-        exit 1
-    fi
-done
+    [[ "${code}" == "302" ]] || fail "Connect never redirected to the dsh token (last=${code})"
+    local loc tok
+    loc="$(req -o /dev/null -D- "${BASE}/" | tr -d '\r' | sed -n 's/^Location: //Ip')"
+    tok="${loc##*token=}"
+    [[ -n "${tok}" && "${loc}" == "/session/contrib/${SESSION_ID}/?token="* ]] \
+        || fail "bad Connect Location: ${loc}"
+    rm -f "${JAR}"
+    req -c "${JAR}" -o /dev/null "${BASE}/?token=${tok}"
+}
 
-# Session-side Desk mailbox: the watcher must ring the doorbell at boot.
-for _ in $(seq 1 30); do
-    [[ -f "${FAKE_HOME}/.astroai/lab/sync/ready.json" ]] && break
+onboarding() {  # badge summary: kind, ready, pending, next
+    req -b "${JAR}" "${BASE}/lab/api/onboarding"
+}
+steps() {  # full checklist the Lab page renders
+    req "${BASE}/lab/api/state" | jget 'json.dumps(d["onboarding"]["steps"])'
+}
+
+wait_lab() {
+    for _ in $(seq 1 60); do
+        [[ "$(req -o /dev/null -w '%{http_code}' "${BASE}/lab/api/health" || true)" == "200" ]] && return 0
+        sleep 2
+    done
+    fail "Lab never answered through the proxy"
+}
+
+wait_job() {  # $1 = job id; prints final job JSON
+    local doc state
+    for _ in $(seq 1 120); do
+        doc="$(req "${BASE}/lab/api/jobs/$1")"
+        state="$(jget 'd["job"]["state"]' <<<"${doc}")"
+        [[ "${state}" != "running" ]] && { echo "${doc}"; return 0; }
+        sleep 1
+    done
+    fail "job $1 never finished"
+}
+
+jget() { python3 -c "import json,sys; d=json.load(sys.stdin); print($1)"; }
+
+echo "Studio local boot check against ${IMAGE}"
+
+# ---- session 1: new user ---------------------------------------------------
+start_session "${WORKDIR}/scratch1"
+wait_lab
+# /arc is CephFS: quotas are xattrs and project access is POSIX ACLs (canfar-session skill).
+docker exec "${NAME}" bash -lc 'command -v getfattr setfattr getfacl setfacl >/dev/null' \
+    || fail "getfattr/setfattr/getfacl/setfacl missing (base apt: acl, attr)"
+# A brand-new session opens on the Lab checklist once, then the Agent tab as usual.
+first="$(req -b "${JAR}" -c "${JAR}" -H 'Sec-Fetch-Dest: document' -o /dev/null -w '%{http_code} %{redirect_url}' "${BASE}/")"
+[[ "${first}" == "302 "*"/session/contrib/${SESSION_ID}/lab/" ]] || fail "new session did not open on the Lab: ${first}"
+page="$(req -b "${JAR}" -H 'Sec-Fetch-Dest: document' "${BASE}/")"
+grep -q 'id="astroai-tabs-config"' <<<"${page}" || fail "Agent page has no tab strip"
+grep -q 'data-astroai-api-shim' <<<"${page}" || fail "Agent page has no session-path shim"
+[[ "$(req -o /dev/null -w '%{http_code}' "${BASE}/__dsh/tabs.js")" == "200" ]] || fail "tabs.js missing"
+
+[[ "$(req -o /dev/null -w '%{redirect_url}' "${BASE}/lab")" == *"/session/contrib/${SESSION_ID}/lab/" ]] \
+    || fail "/lab does not redirect to /lab/"
+lab="$(req -H 'Sec-Fetch-Dest: document' "${BASE}/lab/")"
+grep -q "<base href=\"/session/contrib/${SESSION_ID}/lab/\">" <<<"${lab}" || fail "Lab page has no session <base>"
+grep -q '"active": "lab"' <<<"${lab}" || fail "Lab page tab strip is not on Lab"
+# Tab strip: logo, "Chat", and Settings as a gear icon.
+grep -q '"label": "Chat"' <<<"${lab}" || fail "tab strip has no Chat tab"
+grep -q '"label": "Settings", "href": "[^"]*", "badge": "api/onboarding", "end": true, "icon": "M' <<<"${lab}" \
+    || fail "Settings tab is not a gear icon"
+logo="$(req -o /dev/null -w '%{http_code} %{content_type}' "${BASE}/__dsh/logo.png")"
+[[ "${logo}" == "200 image/png" ]] || fail "tab-strip logo not served (${logo})"
+
+ob="$(onboarding)"
+[[ "$(jget 'd["kind"]' <<<"${ob}")" == "new" ]] || fail "new user not recognised: ${ob}"
+[[ "$(jget 'd["ready"]' <<<"${ob}")" == "False" ]] || fail "new user reported ready: ${ob}"
+[[ "$(jget 'd["next"]' <<<"${ob}")" == "studio" ]] || fail "first step is not a Studio key: ${ob}"
+st="$(steps)"
+jget '[s for s in d if s["id"]=="agents"][0]["action"]["agent"]' <<<"${st}" | grep -qx opencode \
+    || fail "agents step does not suggest OpenCode: ${st}"
+
+# Studio opens on the code folder, and sessions stay private.
+docker exec "${NAME}" grep -q '"path": "/scratch/src"' /arc/home/testuser/.dsh/storages/workspace.json \
+    || fail "the code folder is not a Studio workspace"
+docker exec "${NAME}" grep -q 'id: session-log-deepseek' \
+    /arc/home/testuser/.dsh/profiles/astroai/cordis.patch.yml || fail "session-log upload not disabled"
+docker exec "${NAME}" sh -c 'tr "\0" "\n" </proc/$(pgrep -f "node /opt/astroai/bin/dsh" | head -1)/environ' \
+    | grep -qx DSH_TELEMETRY_DISABLED=1 || fail "dsh runs without DSH_TELEMETRY_DISABLED"
+
+# The Lab itself only trusts the proxy's bearer.
+direct="$(docker exec "${NAME}" curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:4792/api/state)"
+[[ "${direct}" == "401" ]] || fail "Lab answered ${direct} without the bearer"
+nowrite="$(req -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d '{}' \
+    "${BASE}/lab/api/snapshots")"
+[[ "${nowrite}" == "403" ]] || fail "Lab write without X-Canfar-Lab returned ${nowrite}"
+
+# Code folder: $SCRATCH/src by default, with automatic saves.
+ws="$(req "${BASE}/lab/api/workspace")"
+[[ "$(jget 'd["code_dir"]["mode"], d["ephemeral"], d["code_path"]' <<<"${ws}")" == "scratch True /scratch/src" ]] \
+    || fail "default code folder is not \$SCRATCH/src: ${ws}"
+
+# Switch to ~/src and restart the tools there, then back.
+post() { req -X POST -H 'X-Canfar-Lab: 1' -H 'Content-Type: application/json' -d "$2" "${BASE}/lab/api/$1"; }
+live() { docker exec "${NAME}" cat /scratch/.dsh-testuser/live-code-dir 2>/dev/null; }
+switch_to() {  # $1 = mode, $2 = expected path
+    local r
+    r="$(post workspace/code-dir "{\"mode\": \"$1\"}")"
+    [[ "$(jget 'd["new"]' <<<"${r}")" == "$2" ]] || fail "code folder did not change to $2: ${r}"
+    [[ "$(jget 'd["restart_supported"]' <<<"${r}")" == "True" ]] || fail "restart not offered: ${r}"
+    post workspace/restart '{}' >/dev/null
+    for _ in $(seq 1 30); do [[ "$(live)" == "$2" ]] && break; sleep 1; done
+    [[ "$(live)" == "$2" ]] || fail "tools did not restart in $2 (live: $(live))"
+    for _ in $(seq 1 60); do
+        [[ "$(req -o /dev/null -w '%{http_code}' "${BASE}/")" =~ ^(200|302)$ ]] && return 0
+        sleep 2
+    done
+    fail "Chat did not come back after the restart"
+}
+switch_to home /arc/home/testuser/src
+docker exec "${NAME}" test -d /arc/home/testuser/src || fail "~/src was not created"
+[[ "$(docker exec "${NAME}" stat -c %a /arc/home/testuser/src)" == "700" ]] || fail "new ~/src is not private"
+switch_to scratch /scratch/src
+
+# Agent logins and keys are owner-only.
+docker exec "${NAME}" bash -c 'mkdir -p ~/.codex && chmod 755 ~/.codex'
+post workspace/secure '{}' >/dev/null
+[[ "$(docker exec "${NAME}" stat -c %a /arc/home/testuser/.codex)" == "700" ]] || fail "agent config not made private"
+[[ "$(docker exec "${NAME}" stat -c %a /arc/home/testuser/.canfar/lab)" == "700" ]] || fail "~/.canfar/lab not private"
+
+# Some code, then Save through the proxy.
+docker exec "${NAME}" bash -c 'mkdir -p /scratch/src/demo && cd /scratch/src/demo && echo "print(42)" > main.py'
+st="$(steps)"
+jget '[s for s in d if s["id"]=="code"][0]["action"]["op"]' <<<"${st}" | grep -qx save_snapshot \
+    || fail "unsaved code does not nudge Save now: ${st}"
+resp="$(req -X POST -H 'X-Canfar-Lab: 1' -H 'Content-Type: application/json' -d '{"name": "smoke"}' \
+    "${BASE}/lab/api/snapshots")"
+job_id="$(jget 'd["job"]["id"]' <<<"${resp}")" || fail "save did not start a job: ${resp}"
+events="$(req -N --max-time 60 -H 'Accept: text/event-stream' "${BASE}/lab/api/jobs/${job_id}/events" || true)"
+grep -q '^data:' <<<"${events}" || fail "job log did not stream through the proxy"
+final="$(wait_job "${job_id}")"
+[[ "$(jget 'd["job"]["state"]' <<<"${final}")" == "ok" ]] || fail "save failed: ${final}"
+
+# Skaha stops a session with SIGTERM: it must exit (not restart its services),
+# after one last automatic save of what changed since.
+docker exec "${NAME}" bash -c 'echo "print(43)" > /scratch/src/demo/later.py'
+t0=$SECONDS
+docker stop -t 30 "${NAME}" >/dev/null
+(( SECONDS - t0 < 28 )) || fail "SIGTERM did not end the session in time (took $((SECONDS - t0))s)"
+docker rm -f "${NAME}" >/dev/null
+
+# ---- session 2: returning user, empty scratch ------------------------------
+start_session "${WORKDIR}/scratch2"
+wait_lab
+for _ in $(seq 1 60); do
+    docker exec "${NAME}" test -f /scratch/src/demo/main.py && break
     sleep 2
 done
-if [[ ! -f "${FAKE_HOME}/.astroai/lab/sync/ready.json" ]]; then
-    echo "FAIL: session sync watcher never wrote ready.json" >&2
-    grep -i 'sync watcher' "${BOOT}" >&2 || true
-    exit 1
-fi
+docker exec "${NAME}" grep -q 'print(42)' /scratch/src/demo/main.py \
+    || fail "returning session did not restore the snapshot into \$SCRATCH/src"
+docker exec "${NAME}" grep -q 'print(43)' /scratch/src/demo/later.py \
+    || fail "the shutdown save did not carry the last change to the next session"
+ob="$(onboarding)"
+[[ "$(jget 'd["kind"]' <<<"${ob}")" == "returning" ]] || fail "returning user not recognised: ${ob}"
+code="$(req -b "${JAR}" -H 'Sec-Fetch-Dest: document' -o /dev/null -w '%{http_code}' "${BASE}/")"
+[[ "${code}" == "200" ]] || fail "returning user was not sent straight to the Chat tab (${code})"
 
-echo "OK: studio stamp+dangling .dsh boot → token → 200, tools reachable via public Host (${IMAGE})"
+echo "OK: Studio Connect, Chat + Settings tabs, code folder switch + restart, private agent data,"
+echo "    save, shutdown save, auto-restore in a new session (${IMAGE})"

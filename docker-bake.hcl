@@ -12,8 +12,8 @@ variable "TAG" {
   default = "local"
 }
 
-# dsh for the dsh image: an exact version, or "newest" to resolve inside the
-# build. `make build-dsh` sets it to the newest release (scripts/dsh-newest.sh).
+# dsh for the Studio images: an exact version, or "newest" to resolve inside the
+# build. `make build-studio` sets it to the newest release (scripts/dsh-newest.sh).
 variable "DSH_VERSION" {
   default = "newest"
 }
@@ -22,8 +22,8 @@ variable "PYTHON_VERSION" {
   default = "3.13"
 }
 
-# make build-all / release-push. dsh, marimo, and vscode remain as targets and
-# are not in this group (make build-dsh). ray-base and python are bake parents,
+# make build-all / release-push. marimo and vscode remain as targets and
+# are not in this group (make build-marimo). ray-base and python are bake parents,
 # not Harbor images.
 group "default" {
   targets = [
@@ -146,19 +146,13 @@ target "openscience" {
   tags       = ["${REGISTRY}/${OWNER}/openscience:${TAG}"]
 }
 
+# CANFAR Studio: dsh Chat + Terminal, JupyterLab, marimo, VS Code and Settings
+# tabs (docs/STUDIO.md). An unreleased canfar-lab wheel:
+#   --set studio.contexts.canfar-lab-dist=../canfar-lab/dist
 target "studio" {
   inherits   = ["_interface"]
   dockerfile = "dockerfiles/studio/Dockerfile"
   tags       = ["${REGISTRY}/${OWNER}/studio:${TAG}"]
-}
-
-# astroai/dsh: dsh + Lab tab (scripts/startup-dsh.sh). Not in default/release
-# until verified on CANFAR. An unreleased canfar-lab wheel:
-#   --set dsh.contexts.canfar-lab-dist=../canfar-lab/dist
-target "dsh" {
-  inherits   = ["_interface"]
-  dockerfile = "dockerfiles/dsh/Dockerfile"
-  tags       = ["${REGISTRY}/${OWNER}/dsh:${TAG}"]
   args = {
     DSH_VERSION = "${DSH_VERSION}"
   }
@@ -231,10 +225,11 @@ target "improc-studio" {
   }
   tags = ["${REGISTRY}/${OWNER}/improc-studio:${TAG}"]
   args = {
-    REGISTRY  = "${REGISTRY}"
-    OWNER     = "${OWNER}"
-    BASE_NAME = "improc"
-    TAG       = "${TAG}"
+    REGISTRY    = "${REGISTRY}"
+    OWNER       = "${OWNER}"
+    BASE_NAME   = "improc"
+    TAG         = "${TAG}"
+    DSH_VERSION = "${DSH_VERSION}"
   }
 }
 
@@ -279,10 +274,11 @@ target "specproc-studio" {
   }
   tags = ["${REGISTRY}/${OWNER}/specproc-studio:${TAG}"]
   args = {
-    REGISTRY  = "${REGISTRY}"
-    OWNER     = "${OWNER}"
-    BASE_NAME = "specproc"
-    TAG       = "${TAG}"
+    REGISTRY    = "${REGISTRY}"
+    OWNER       = "${OWNER}"
+    BASE_NAME   = "specproc"
+    TAG         = "${TAG}"
+    DSH_VERSION = "${DSH_VERSION}"
   }
 }
 

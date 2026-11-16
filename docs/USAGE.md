@@ -22,16 +22,16 @@ This file ships inside images as `/opt/astroai/USAGE.md`.
 
 The first interactive shell on a new image prints `/opt/astroai/whats-new.txt` once per account (stamp: `~/.astroai/lab/whats-new-seen`). Later shells stay quiet. Notebook, Studio, and VS Code show it when you open their terminal. Set `ASTROAI_WHATS_NEW=0` to skip it.
 
-### Home base: AstroAI Studio (coding portal)
+### Home base: CANFAR Studio
 
 1. Launch **`studio`** with tag `latest` (or the current `YY.MM` release).
-2. Open the connect URL — DeepSeek Harness (`dsh`) coding agent in the browser.
-3. Top-right chips ([STUDIO.md](STUDIO.md)):
-   - **Terminal** → `/terminal/` (ghostty-web + tmux; `/astroai-terminal/` is an alias)
-   - **Agents** → `/hub/#agents` — Install/Setup agents (`/astroai-agents/` alias)
-   - **Compute** → `/hub/#compute` — batch jobs and Ray
-4. Skills: `npx skills add astroai/canfar-skills`. Team review: pick **AstroAI Studio Team** preset (or `canfar-lab panel run` headless).
-5. Laptop: `canfar-lab studio` (same stack, no Skaha proxy).
+2. Open the connect URL. The tab strip ([STUDIO.md](STUDIO.md)):
+   - **Chat** — the coding agent (dsh); add an API key in Settings first
+   - **Terminal** — ghostty-web + tmux
+   - **JupyterLab**, **marimo**, **VS Code** — started the first time you open them
+   - **⚙ Settings** — API keys, agents (Claude Code, Codex, …), code folder, saves
+3. Team review: pick the **AstroAI Studio Team** preset in Chat (or `canfar lab studio review` headless).
+4. Laptop: `canfar lab studio` (dsh only, no tab strip).
 
 ```bash
 canfar create --name studio contributed images.canfar.net/astroai/studio:latest
@@ -153,10 +153,9 @@ Compilers and editors are in interactive images; put CUDA/ML stacks in your pixi
 | `marimo` | Reactive `.py` notebooks; starter seeded once under `$SRCDIR/notebooks` (not in `build-all`) |
 | `openresearch` | Autoresearch UI (`orx`) on `:5000`; top-right pill → Terminal (`/astroai-terminal/`), AstroAI hub (`/astroai-agents/`), Compute |
 | `openscience` | OpenScience research workspace on `:5000` with the astroai CADC/VO tools and astronomy Python; bottom-right pill → hub (`/astroai-agents/`) and Compute |
-| `studio` | dsh coding portal on `:5000`; **Terminal** / **Agents** / **Compute** chips — see [STUDIO.md](STUDIO.md) |
+| `studio` | CANFAR Studio on `:5000`: Chat, Terminal, JupyterLab, marimo, VS Code and Settings tabs — see [STUDIO.md](STUDIO.md) |
 | `improc-studio` | Same studio on the improc stack. Default Jupyter kernel and marimo use `/opt/astroai/venv/improc` |
 | `specproc-studio` | Same studio on the specproc stack. Default Jupyter kernel and marimo use `/opt/astroai/venv/specproc` |
-| `dsh` | Coding workbench + Lab tab on `:5000` (not in `build-all`) |
 | `ray-manager` | Cluster UI + Ray head; see Ray section |
 | `improc` | Headless FITS/HDF5 image-processing CLIs — see [Image processing (`improc`)](#image-processing-improc) |
 
