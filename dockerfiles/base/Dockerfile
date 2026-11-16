@@ -193,14 +193,17 @@ RUN mkdir -p /opt/astroai/{bin,cache,lib,venv} /cadc "${WORK}" \
 
 COPY config/cadc-tools.txt /opt/astroai/cadc-tools.txt
 COPY scripts/patch-clint-py313.sh /tmp/patch-clint-py313.sh
-COPY config/astroai-lab.in config/astroai-lab.lock /tmp/
+COPY config/canfar-lab.txt /tmp/canfar-lab.txt
 COPY scripts/lib/assert-image-python.sh /opt/astroai/lib/assert-image-python.sh
+# Float canfar-lab (+ CADC clients) at build time. ADD the PyPI JSON so this
+# layer rebuilds when a canfar-lab release publishes (no lockfile).
+ADD https://pypi.org/pypi/canfar-lab/json /tmp/canfar-lab-pypi.json
 RUN chmod a+rx /opt/astroai/lib/assert-image-python.sh \
     && ln -sf /opt/astroai/lib/assert-image-python.sh /usr/local/bin/assert-image-python \
     && uv venv --python python3 /opt/canfar \
     && assert-image-python /opt/canfar/bin/python \
     && uv pip install --python /opt/canfar -r /opt/astroai/cadc-tools.txt \
-    && uv pip install --python /opt/canfar --requirements /tmp/astroai-lab.lock \
+    && uv pip install --python /opt/canfar -r /tmp/canfar-lab.txt \
     && /opt/canfar/bin/canfar-lab cluster --help >/dev/null \
     && printf '%s\n' \
         '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05"}}' \
@@ -208,7 +211,7 @@ RUN chmod a+rx /opt/astroai/lib/assert-image-python.sh \
         | /opt/canfar/bin/canfar-lab mcp serve \
         | grep -q cluster_start \
     && bash /tmp/patch-clint-py313.sh /opt/canfar \
-    && rm /tmp/patch-clint-py313.sh /tmp/astroai-lab.in /tmp/astroai-lab.lock \
+    && rm -f /tmp/patch-clint-py313.sh /tmp/canfar-lab.txt /tmp/canfar-lab-pypi.json \
     && chmod -R a+rwX /opt/canfar \
     # Copy the packaged session shell files straight out of the installed
     # canfar-lab wheel — canfar-lab itself stays an in-session tool only.
@@ -220,23 +223,6 @@ RUN chmod a+rx /opt/astroai/lib/assert-image-python.sh \
     && HOME=/tmp WORK=/srcdir SCRATCH=/scratch \
        /opt/canfar/bin/canfar-lab env export --no-ensure >/dev/null \
     && uv cache clean
-
-# The lock above pins the rest of the environment. canfar-lab itself tracks
-# the latest PyPI release; this layer rebuilds when that release changes.
-ADD https://pypi.org/pypi/canfar-lab/json /tmp/canfar-lab-pypi.json
-COPY scripts/install-canfar-lab-latest.sh /tmp/install-canfar-lab-latest.sh
-RUN bash /tmp/install-canfar-lab-latest.sh /opt/canfar \
-    && /opt/canfar/bin/canfar-lab cluster --help >/dev/null \
-    && printf '%s\n' \
-        '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05"}}' \
-        '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
-        | /opt/canfar/bin/canfar-lab mcp serve \
-        | grep -q cluster_start \
-    && /opt/canfar/bin/python -c "import importlib.resources as r, shutil; p=r.files('canfar_lab.data.shell'); shutil.copy(p.joinpath('profile.sh'), '/etc/astroai-lab/profile.sh'); shutil.copy(p.joinpath('hooks.sh'), '/etc/astroai-lab/hooks.sh')" \
-    && chmod a+r /etc/astroai-lab/profile.sh /etc/astroai-lab/hooks.sh \
-    && HOME=/tmp WORK=/srcdir SCRATCH=/scratch \
-       /opt/canfar/bin/canfar-lab env export --no-ensure >/dev/null \
-    && rm -f /tmp/install-canfar-lab-latest.sh /tmp/canfar-lab-pypi.json
 
 COPY scripts/lib/astroai-env-common.sh scripts/lib/astroai-ui.sh scripts/lib/skaha-proxy.sh \
      scripts/lib/session_title.py scripts/astroai-whats-new.sh /opt/astroai/lib/

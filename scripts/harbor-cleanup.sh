@@ -32,8 +32,8 @@
 # Environment overrides:
 #   REGISTRY         default: images.canfar.net
 #   OWNER            default: astroai
-#   KEEP_TAGS        default: "26.10 26.09 latest"   (space-separated)
-#   KNOWN_REPOS      default: session + ray + improc images (see script)
+#   KEEP_TAGS        default: "<this UTC YY.MM> <prior YY.MM> latest"
+#   KNOWN_REPOS      default: session + ray + science + dsh (+ legacy webterm*)
 #   CANDIDATE_TAGS   default: current + prior YY.MM tags, latest, local, sha-
 #   DOCKER_CONFIG    default: $HOME/.docker/config.json
 
@@ -41,10 +41,13 @@ set -euo pipefail
 
 REGISTRY="${REGISTRY:-images.canfar.net}"
 OWNER="${OWNER:-astroai}"
-KEEP_TAGS="${KEEP_TAGS:-26.10 26.09 latest}"
-KNOWN_REPOS="${KNOWN_REPOS:-base terminal vscode notebook marimo openresearch openscience studio improc improc-studio improc-terminal improc-notebook specproc specproc-studio specproc-terminal specproc-notebook ray-manager ray-worker webterm improc-webterm}"
+# Current and previous UTC calendar months (GNU date).
+_THIS_MONTH="$(date -u +%y.%m)"
+_PREV_MONTH="$(date -u -d "$(date -u +%Y-%m-15) -1 month" +%y.%m)"
+KEEP_TAGS="${KEEP_TAGS:-${_THIS_MONTH} ${_PREV_MONTH} latest}"
+KNOWN_REPOS="${KNOWN_REPOS:-base terminal vscode notebook marimo openresearch openscience studio dsh improc improc-studio improc-terminal improc-notebook specproc specproc-studio specproc-terminal specproc-notebook ray-manager ray-worker webterm improc-webterm}"
 # webterm / improc-webterm: legacy Harbor names (renamed to terminal / improc-terminal)
-CANDIDATE_TAGS_DEFAULT='26.10 26.09 26.08 latest 26.07 26.06 26.05 26.04 25.12 25.11 25.10 25.09 25.08 25.07 25.06 25.05 25.04 25.03 25.02 25.01 24.12 24.11 24.10 24.09 24.08 24.07 local sha-'
+CANDIDATE_TAGS_DEFAULT="${_THIS_MONTH} ${_PREV_MONTH} 26.09 26.08 latest 26.07 26.06 26.05 26.04 25.12 25.11 25.10 25.09 25.08 25.07 25.06 25.05 25.04 25.03 25.02 25.01 24.12 24.11 24.10 24.09 24.08 24.07 local sha-"
 CANDIDATE_TAGS="${CANDIDATE_TAGS:-${CANDIDATE_TAGS_DEFAULT}}"
 DRY_RUN="${DRY_RUN:-0}"
 DOCKER_CONFIG="${DOCKER_CONFIG:-$HOME/.docker/config.json}"

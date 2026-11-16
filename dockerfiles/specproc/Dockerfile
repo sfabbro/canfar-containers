@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 # AstroAI specproc: instrument-blind spectroscopy on base.
-# Group image. pPXF forbids redistribution and moogpy/pymoog vendor MOOG,
-# so do not push this to the public astroai Harbor project.
+# In build-all / public astroai catalog. pPXF and moogpy/pymoog (MOOG) are
+# vendored — redistribution caveats apply; see docs/OPERATORS.md.
 # Headless. Julia + Fortran synthesizers; uv for the science venv.
 # Versions float at build time — no lockfiles, no pin ARGs.
 

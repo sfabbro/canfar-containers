@@ -1,9 +1,0 @@
-# Source constraint for canfar-lab, consumed by `make lock-astroai-lab`.
-#
-# Unpinned on purpose. The lock pins transitive dependencies for lock-check.
-# Image builds install that lock, then reinstall the latest canfar-lab from
-# PyPI so the package tracks the current release at build time. Never edit
-# the lockfile by hand.
-#
-# canfar-lab is a PyPI package.
-canfar-lab

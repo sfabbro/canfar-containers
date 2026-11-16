@@ -1,6 +1,6 @@
 [tool.ruff]
 line-length = 100
-target-version = "py312"
+target-version = "py313"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "BLE", "SIM", "PIE"]
@@ -26,15 +26,9 @@ extend-ignore = ["SIM112"]
 "tests/*.py" = ["E402", "E501", "SIM117", "SIM105", "F841"]
 
 # Private project — installed into a runtime venv at image build time AND
-# into a CI venv for the unit tests below. Never published to a package
-# index. Lower-bound-only pins: the resolver captures resolved versions
-# in the lockfile; bump deliberately via `make lock-ray` /
-# `make lock-astroai-lab` and rerun the test lane, never by adding upper
-# bounds here.
-#
-# Note: `make lock-ray` regenerates config/ray-deps.lock only — it does NOT
-# touch this directory's uv.lock. After a canfar-lab release, run `uv lock`
-# here and `make lock-astroai-lab`.
+# into a CI venv for unit tests. Never published. Lower-bound-only deps;
+# no committed uv.lock (resolve fresh in CI / local). Image Ray deps float
+# from config/ray-deps.txt + config/canfar-lab.txt at docker build.
 [project]
 name = "astroai-ray-manager"
 version = "0.1.0"

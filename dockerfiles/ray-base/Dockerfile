@@ -7,7 +7,7 @@ ARG PYTHON_VERSION=3.13
 FROM astroai-python:${PYTHON_VERSION}
 
 LABEL org.opencontainers.image.title="AstroAI Ray Base (slim)" \
-      org.opencontainers.image.description="Minimal Ray + astroai-lab for workers"
+      org.opencontainers.image.description="Minimal Ray + canfar-lab for workers"
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
@@ -38,14 +38,16 @@ RUN mkdir -p /opt/astroai/{bin,cache,lib,venv} /cadc "${WORK}" \
     && chmod -R a+rwx /opt/astroai/cache \
     && chmod 1777 "${WORK}"  # /srcdir stays writable (clone --dir /srcdir)
 
-# Minimal lab install (resume/save/paths) — no full CADC kitchen sink on workers.
-COPY config/astroai-lab.in config/astroai-lab.lock /tmp/
-COPY scripts/lib/assert-image-python.sh /opt/astroai/lib/assert-image-python.sh
-RUN chmod a+rx /opt/astroai/lib/assert-image-python.sh \
+# Minimal lab + Ray. canfar-lab floats; Ray is exact-pinned in ray-deps.txt so
+# manager and worker share one cluster ABI (same Ray + PYTHON_VERSION).
+COPY config/canfar-lab.txt config/ray-deps.txt /tmp/
+COPY scripts/lib/assert-image-python.sh scripts/lib/install-ray-venv.sh /opt/astroai/lib/
+ADD https://pypi.org/pypi/canfar-lab/json /tmp/canfar-lab-pypi.json
+RUN chmod a+rx /opt/astroai/lib/assert-image-python.sh /opt/astroai/lib/install-ray-venv.sh \
     && ln -sf /opt/astroai/lib/assert-image-python.sh /usr/local/bin/assert-image-python \
     && uv venv --python python3 /opt/canfar \
     && assert-image-python /opt/canfar/bin/python \
-    && uv pip install --python /opt/canfar --requirements /tmp/astroai-lab.lock \
+    && uv pip install --python /opt/canfar -r /tmp/canfar-lab.txt \
     && chmod -R a+rwX /opt/canfar \
     && mkdir -p /etc/astroai-lab \
     && /opt/canfar/bin/python -c "import importlib.resources as r, shutil; p=r.files('canfar_lab.data.shell'); shutil.copy(p.joinpath('profile.sh'), '/etc/astroai-lab/profile.sh'); shutil.copy(p.joinpath('hooks.sh'), '/etc/astroai-lab/hooks.sh')" \
@@ -53,29 +55,15 @@ RUN chmod a+rx /opt/astroai/lib/assert-image-python.sh \
     && test -f /etc/astroai-lab/profile.sh \
     && test -f /etc/astroai-lab/hooks.sh \
     && HOME=/tmp WORK=/srcdir SCRATCH=/scratch \
-       /opt/canfar/bin/canfar-lab env export --no-ensure >/dev/null
-
-# canfar-lab tracks the latest PyPI release; the lock above pins its dependencies.
-ADD https://pypi.org/pypi/canfar-lab/json /tmp/canfar-lab-pypi.json
-COPY scripts/install-canfar-lab-latest.sh /tmp/install-canfar-lab-latest.sh
-RUN bash /tmp/install-canfar-lab-latest.sh /opt/canfar \
-    && /opt/canfar/bin/python -c "import importlib.resources as r, shutil; p=r.files('canfar_lab.data.shell'); shutil.copy(p.joinpath('profile.sh'), '/etc/astroai-lab/profile.sh'); shutil.copy(p.joinpath('hooks.sh'), '/etc/astroai-lab/hooks.sh')" \
-    && chmod a+r /etc/astroai-lab/profile.sh /etc/astroai-lab/hooks.sh \
-    && HOME=/tmp WORK=/srcdir SCRATCH=/scratch \
-       /opt/canfar/bin/canfar-lab env export --no-ensure >/dev/null
+       /opt/canfar/bin/canfar-lab env export --no-ensure >/dev/null \
+    && uv venv --python python3 /opt/astroai/venv/ray \
+    && assert-image-python /opt/astroai/venv/ray/bin/python \
+    && bash /opt/astroai/lib/install-ray-venv.sh /opt/astroai/venv/ray /tmp/ray-deps.txt \
+    && uv pip install --python /opt/astroai/venv/ray -r /tmp/canfar-lab.txt \
+    && rm -f /tmp/ray-deps.txt /tmp/canfar-lab.txt /tmp/canfar-lab-pypi.json \
+    && uv cache clean
 
 COPY scripts/lib/astroai-env-common.sh scripts/lib/astroai-ui.sh /opt/astroai/lib/
-COPY config/ray-deps.txt config/ray-deps.lock /tmp/
-RUN uv venv --python python3 /opt/astroai/venv/ray \
-    && assert-image-python /opt/astroai/venv/ray/bin/python \
-    && uv pip install --python /opt/astroai/venv/ray --requirements /tmp/ray-deps.lock \
-    && uv pip install --python /opt/astroai/venv/ray --requirements /tmp/astroai-lab.lock \
-    && rm /tmp/ray-deps.txt /tmp/ray-deps.lock /tmp/astroai-lab.in /tmp/astroai-lab.lock \
-    && /opt/astroai/venv/ray/bin/python -c "import ray; print(ray.__version__)" \
-        > /opt/astroai/ray-version.txt \
-    && chmod a+r /opt/astroai/ray-version.txt \
-    && bash /tmp/install-canfar-lab-latest.sh /opt/astroai/venv/ray \
-    && rm -f /tmp/install-canfar-lab-latest.sh /tmp/canfar-lab-pypi.json
 
 ENV PATH="/opt/astroai/venv/ray/bin:/opt/canfar/bin:${PATH}"
 

@@ -51,12 +51,12 @@ git checkout -b my-change
 | System packages | `dockerfiles/base/Dockerfile` | Yes — `base`+ |
 | Python / uv / pixi foundation | `dockerfiles/python/Dockerfile` (untagged bake parent, not a Harbor image; `PYTHON_VERSION` shared by base/ray/improc/specproc) | Full stack |
 | Jupyter config | `config/jupyter_server_config.py` | `notebook` |
-| Marimo starter notebook | **Edit in** [astroai-lab](https://github.com/astroai/canfar-lab) `data/notebooks/starter.py`, then `make sync-marimo-starter` | `marimo` |
+| Marimo starter notebook | **Edit in** [canfar-lab](https://github.com/astroai/canfar-lab) `src/canfar_lab/data/notebooks/starter.py`, then `make sync-marimo-starter` | `marimo` |
 | Jupyter / Ray starters | **Edit in** lab `data/notebooks/`, then `make sync-notebook-starters` | `notebook` |
 | CADC client list | `config/cadc-tools.txt` | `base`+ |
 | First-shell what's new | `config/whats-new.txt` (bump the `# id:` line) | `base`+ |
-| **`astroai` CLI** | `config/astroai-lab.in` + lock, then the latest PyPI `canfar-lab` at image build | `base`+ |
-| Ray | `config/ray-deps.txt`, `dockerfiles/ray-*`, `ray/`, `scripts/*ray*` | `make build-ray` |
+| **`astroai` CLI** | `config/canfar-lab.txt` (unpinned; latest PyPI at image build) | `base`+ |
+| Ray | `config/ray-deps.txt` (exact `ray[default]==` pin for manager+worker ABI), `dockerfiles/ray-*`, `ray/`, `scripts/*ray*` | `make build-ray` |
 | Bake graph, tags | `docker-bake.hcl`, `Makefile` | Depends |
 
 Interactive `base` keeps compilers and session tools (scientists compile in
@@ -66,7 +66,7 @@ projects. Slim `ray-base` (workers only) stays minimal — see [RAY.md](RAY.md).
 ## Local build and test
 
 ```bash
-make build/studio
+make build-studio          # or build/<name>; also build-dsh, build-marimo, …
 make build-all
 ./scripts/test-local.sh studio 5000
 ./scripts/test-local.sh notebook 8888
@@ -82,23 +82,22 @@ canfar-lab status
 uv run python -c "print('ok')"
 ```
 
-## Refresh the `astroai-lab` lock
+## Python deps (no lockfiles)
 
-`config/astroai-lab.in` tracks PyPI `canfar-lab` unpinned. Images install the compiled lock, then reinstall the latest `canfar-lab` release, so a rebuild follows PyPI without a lock bump. `lock-check` still fails when the compiled lock drifts from `.in`; regenerate it then:
+`config/canfar-lab.txt`, `config/improc-py.txt`, and `config/specproc-py.txt`
+are unpinned. `config/ray-deps.txt` pins **only** `ray[default]==…` so
+manager and worker share one Ray version (Ray cluster ABI); bump it and
+rebuild both with `make build-ray`. Dockerfiles `ADD` the canfar-lab PyPI
+JSON so a new release rebuilds that layer. Optional local wheel for `dsh`:
+bake with `--set dsh.contexts.canfar-lab-dist=../canfar-lab/dist`.
 
 ```bash
-cd ../astroai-lab
-uv run pytest -q
+cd ../canfar-lab && uv run pytest -q
 cd ../canfar-containers
-make lock-astroai-lab
-(cd ray/manager && uv lock)
-make lock-check
 make build-all BUILD_TAG=local
 make test-local BUILD_TAG=local
 make test-ray BUILD_TAG=local
 ```
-
-Same pattern for `make lock-ray` when unpinned Ray deps move. OpenResearch, OpenScience, OpenVSCode, dsh, and canfar-lab are resolved at image build time; canfar-lab comes from PyPI. There is no version bump to make in the Dockerfiles.
 
 ## Writable CADC venv
 
@@ -111,8 +110,8 @@ Project deps use pixi/uv under `WORK`; caches prefer scratch via
 
 ```bash
 make test-ray BUILD_TAG=local
-make test-canfar-ray TAG=26.09
-make test-canfar-ray-gpu TAG=26.09
+make test-canfar-ray TAG=$(date -u +%y.%m)
+make test-canfar-ray-gpu TAG=$(date -u +%y.%m)
 ```
 
 | Script | Checks |
@@ -127,8 +126,8 @@ Integration tests for the CLI live in
 
 ## Marimo starter sync
 
-Canonical `starter.py` lives in **astroai-lab**
-(`src/astroai_lab/data/notebooks/starter.py`). The copy under
+Canonical `starter.py` lives in **canfar-lab**
+(`src/canfar_lab/data/notebooks/starter.py`). The copy under
 `config/notebooks/starter.py` is what the marimo image installs — keep them
 identical:
 

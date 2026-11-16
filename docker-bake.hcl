@@ -13,7 +13,7 @@ variable "TAG" {
 }
 
 # dsh for the dsh image: an exact version, or "newest" to resolve inside the
-# build. `make build/dsh` sets it to the newest release (scripts/dsh-newest.sh).
+# build. `make build-dsh` sets it to the newest release (scripts/dsh-newest.sh).
 variable "DSH_VERSION" {
   default = "newest"
 }
@@ -22,8 +22,9 @@ variable "PYTHON_VERSION" {
   default = "3.13"
 }
 
-# make build-all / release-push. marimo and vscode remain as targets and are
-# not in this group. ray-base and python are bake parents, not Harbor images.
+# make build-all / release-push. dsh, marimo, and vscode remain as targets and
+# are not in this group (make build-dsh). ray-base and python are bake parents,
+# not Harbor images.
 group "default" {
   targets = [
     "base",
@@ -253,7 +254,8 @@ target "improc-terminal" {
   }
 }
 
-# Headless spectroscopy stack. Group image: do not push to public astroai.
+# Headless spectroscopy stack (in build-all / release). Vendors pPXF and MOOG —
+# catalog image with redistribution caveats; see docs/OPERATORS.md.
 target "specproc" {
   context    = "."
   dockerfile = "dockerfiles/specproc/Dockerfile"

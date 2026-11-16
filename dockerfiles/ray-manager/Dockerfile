@@ -18,30 +18,19 @@ ENV BUILD_TAG=${TAG}
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
-COPY config/ray-deps.txt config/ray-deps.lock config/astroai-lab.lock /tmp/
-RUN uv venv --python python3 /opt/astroai/venv/ray \
+# Same Ray pin + PYTHON_VERSION as ray-worker (config/ray-deps.txt). canfar-lab
+# floats; /opt/canfar already has it from base.
+COPY config/ray-deps.txt config/canfar-lab.txt /tmp/
+COPY scripts/lib/install-ray-venv.sh /opt/astroai/lib/install-ray-venv.sh
+ADD https://pypi.org/pypi/canfar-lab/json /tmp/canfar-lab-pypi.json
+RUN chmod a+rx /opt/astroai/lib/install-ray-venv.sh \
+    && uv venv --python python3 /opt/astroai/venv/ray \
     && assert-image-python /opt/astroai/venv/ray/bin/python \
-    && uv pip install --python /opt/astroai/venv/ray --requirements /tmp/ray-deps.lock \
-    && uv pip install --python /opt/astroai/venv/ray --requirements /tmp/astroai-lab.lock \
-    && rm /tmp/ray-deps.txt /tmp/ray-deps.lock /tmp/astroai-lab.lock \
-    && /opt/astroai/venv/ray/bin/python -c "import ray; print(ray.__version__)" \
-        > /opt/astroai/ray-version.txt \
-    && chmod a+r /opt/astroai/ray-version.txt \
+    && bash /opt/astroai/lib/install-ray-venv.sh /opt/astroai/venv/ray /tmp/ray-deps.txt \
+    && uv pip install --python /opt/astroai/venv/ray -r /tmp/canfar-lab.txt \
     && uv pip install --python /opt/astroai/venv/ray \
         fastapi uvicorn[standard] python-multipart httpx websockets \
-    && /opt/astroai/venv/ray/bin/canfar-lab cluster --help >/dev/null \
-    && /opt/astroai/venv/ray/bin/canfar-lab autoscaler --help >/dev/null \
-    && printf '%s\n' \
-        '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05"}}' \
-        '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
-        | /opt/astroai/venv/ray/bin/canfar-lab mcp serve \
-        | grep -q cluster_start
-
-# canfar-lab in this venv tracks the latest PyPI release. /opt/canfar already
-# does, because it comes from the base image.
-ADD https://pypi.org/pypi/canfar-lab/json /tmp/canfar-lab-pypi.json
-COPY scripts/install-canfar-lab-latest.sh /tmp/install-canfar-lab-latest.sh
-RUN bash /tmp/install-canfar-lab-latest.sh /opt/astroai/venv/ray \
+    && rm -f /tmp/ray-deps.txt /tmp/canfar-lab.txt /tmp/canfar-lab-pypi.json \
     && /opt/astroai/venv/ray/bin/canfar-lab cluster --help >/dev/null \
     && /opt/astroai/venv/ray/bin/canfar-lab autoscaler --help >/dev/null \
     && printf '%s\n' \
@@ -49,7 +38,7 @@ RUN bash /tmp/install-canfar-lab-latest.sh /opt/astroai/venv/ray \
         '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
         | /opt/astroai/venv/ray/bin/canfar-lab mcp serve \
         | grep -q cluster_start \
-    && rm -f /tmp/install-canfar-lab-latest.sh /tmp/canfar-lab-pypi.json
+    && uv cache clean
 
 ENV PATH="/opt/astroai/venv/ray/bin:/opt/canfar/bin:${PATH}"
 

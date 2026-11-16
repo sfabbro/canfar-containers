@@ -6,8 +6,8 @@
 # emits a web token (otherwise Connect 401s).
 #
 # Usage:
-#   TAG=26.09 ./scripts/test-studio-local.sh
-#   make test-studio-local BUILD_TAG=26.09
+#   TAG=local ./scripts/test-studio-local.sh
+#   make test-studio-local BUILD_TAG=local
 set -euo pipefail
 
 OWNER="${OWNER:-astroai}"

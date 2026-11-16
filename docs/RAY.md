@@ -50,14 +50,20 @@ on `/arc`.
 ## Build and test
 
 ```bash
-make build-ray BUILD_TAG=26.09
+TAG=$(date -u +%y.%m)
+make build-ray BUILD_TAG=$TAG TAG=$TAG
 make test-ray
-make push-ray TAG=26.09
-make test-canfar-ray TAG=26.09
-make test-canfar-ray-gpu TAG=26.09
+make push-ray TAG=$TAG BUILD_TAG=$TAG
+make test-canfar-ray TAG=$TAG
+make test-canfar-ray-gpu TAG=$TAG
 ```
 
 Ray layers use the **same bake `TAG` as `base`**.
+
+**Cluster ABI (Ray best practice):** `ray-manager` and `ray-worker` share
+`PYTHON_VERSION` (default `3.13`) and the exact pin in `config/ray-deps.txt`
+(`ray[default]==…`). Bump that pin deliberately and rebuild both with
+`make build-ray`. Floating Ray independently on each image would break joins.
 
 For Jobs / Dashboard on CANFAR, start the manager with **≥8 GiB** memory.
 
@@ -71,7 +77,7 @@ From any AstroAI session (terminal/vscode):
 
 ```bash
 canfar login
-canfar create --name raymgr contributed images.canfar.net/astroai/ray-manager:26.09
+canfar create --name raymgr contributed images.canfar.net/astroai/ray-manager:latest
 ```
 
 Credentials persist as `~/.canfar/config.yaml` (and optionally
@@ -219,7 +225,7 @@ autoscaling off for the next manager.
 Verify end-to-end on CANFAR (manager UI + dynamic scale-up + idle scale-down):
 
 ```bash
-make test-canfar-ray-autoscale TAG=26.09
+make test-canfar-ray-autoscale TAG=$(date -u +%y.%m)
 ```
 
 ## Manager API

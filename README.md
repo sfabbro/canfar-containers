@@ -45,10 +45,12 @@ flowchart TB
 | `ray-worker` | Ray worker CPU or GPU (manager-launched) | Headless |
 | `ray-manager` | Ray head + control panel + Dashboard ([RAY.md](docs/RAY.md)) | Contributed |
 | `studio` | AstroAI Studio on base — [STUDIO.md](docs/STUDIO.md) | Contributed |
-| `improc-studio` | Same studio; improc is the default Python | Contributed |
-| `specproc-studio` | Same studio; specproc is the default Python | Contributed |
+| `improc-studio` / `specproc-studio` | Same studio; science venv is default Python | Contributed |
+| `terminal` / `notebook` | Ghostty web terminal / JupyterLab on base | Contributed / Notebook |
+| `improc-terminal` / `improc-notebook` | Same on improc | Contributed / Notebook |
+| `specproc-terminal` / `specproc-notebook` | Same on specproc | Contributed / Notebook |
 
-`marimo` and `vscode` still have Dockerfiles and are not part of `make build-all`. `terminal` / `notebook` (and improc/specproc variants) are in `build-all`.
+Not in `make build-all` (still buildable): `dsh` (`make build-dsh`), `marimo`, `vscode`.
 
 ## Documentation
 
@@ -67,13 +69,15 @@ In-session: `canfar-lab help` · `less /opt/astroai/USAGE.md`
 Requires Docker with buildx. Full loop: [CONTRIBUTING.md](docs/CONTRIBUTING.md).
 
 ```bash
-make build-all              # default bake: studios + terminal/notebook (+ improc/specproc variants) + Ray + science headless
+make build-all              # default bake (DEFAULT_IMAGES)
 make build-ray              # ray-manager + ray-worker
-make build-improc           # improc + improc-studio (+ base)
-make build-specproc         # specproc + specproc-studio (+ base)
-make build/studio           # one image (+ parents)
+make build-improc           # improc family (+ base)
+make build-specproc         # specproc family (+ base)
+make build-studio           # one image (+ parents); also build/<name>
+make build-dsh              # astroai/dsh (not in build-all yet)
 make test-local             # local smokes
 make test-improc-local      # improc CLI smoke
+make test-dsh-local         # dsh Connect + Lab tab smoke
 make test-ray               # local Ray cluster + UI
 ```
 
@@ -83,10 +87,12 @@ See [OPERATORS.md](docs/OPERATORS.md). The `astroai` Harbor project is **public*
 (anonymous pull); push still needs `docker login images.canfar.net`.
 
 ```bash
-make push-all TAG=26.10 BUILD_TAG=26.10
+# TAG defaults to current UTC YY.MM; set BUILD_TAG to the same for release pushes
+TAG=$(date -u +%y.%m)
+make push-all TAG="$TAG" BUILD_TAG="$TAG"
 ```
 
-Default `TAG` is current UTC `YY.MM` (for example `26.10`).
+Each push also publishes `:latest` (same digest as `TAG`).
 
 ## Layout
 
@@ -94,15 +100,15 @@ Default `TAG` is current UTC `YY.MM` (for example `26.10`).
 dockerfiles/   python (untagged bake parent) → base → sessions | improc | specproc; python → ray-base → worker; base → ray-manager
 ray/           manager FastAPI app + worker helpers
 scripts/       startup-*.sh, test-*.sh, profile
-config/        astroai-lab.lock, ray-deps.lock, improc-py.txt, specproc-py.txt, notebooks (synced from lab)
-docs/          USAGE, RAY, OPERATORS, CONTRIBUTING
-examples/ray/  container-local Ray smokes
+config/        canfar-lab.txt, ray-deps.txt, improc-py.txt, specproc-py.txt, notebooks (synced from lab)
+docs/          USAGE, RAY, OPERATORS, CONTRIBUTING, STUDIO
+examples/      improc + Ray smokes
 ```
 
 ## Design
 
 - **Same images for CPU and GPU** — choose the node in the portal; CUDA/ML stacks via pixi/uv in the project.
-- **Bake graph:** untagged `python` stage → fat `base` → `studio` / `terminal` / `notebook`, `openscience`, `openresearch`, `improc` → `improc-studio` / `improc-terminal` / `improc-notebook`, `specproc` → `specproc-studio` / `specproc-terminal` / `specproc-notebook`, and `ray-manager`. Slim `ray-base` (from that python stage, not published) → `ray-worker`. `marimo` and `vscode` are outside `build-all`. Images install the latest PyPI `canfar-lab`.
+- **Bake graph:** untagged `python` stage → fat `base` → `studio` / `terminal` / `notebook`, `openscience`, `openresearch`, `improc` → `improc-*`, `specproc` → `specproc-*`, and `ray-manager`. Slim `ray-base` (from that python stage, not published) → `ray-worker`. `dsh`, `marimo`, and `vscode` are outside `build-all`. Python deps float at build from `config/*.txt` (latest PyPI `canfar-lab`; optional local wheel via bake `canfar-lab-dist` for `dsh`).
 - **One Python:** `PYTHON_VERSION` (default `3.13`) is shared by `base`, `ray-worker`, `ray-manager`, `improc`, and `specproc`. uv is forbidden from downloading a second interpreter (`UV_PYTHON_DOWNLOADS=never`); science/Ray venvs use `uv venv --python python3` and `assert-image-python`.
 - **Fast session disks:** `WORK` is `$SCRATCH/src` when `/srcdir` is the container overlay (OOM-fragile) and `/scratch` is a volume; `SCRATCH` (`/scratch`) holds data and caches. Both are session-private. `/arc/home` and `/arc/projects` are shared across sessions. Persist with `canfar-lab save` / `git push`.
 - **Skaha types:** Contributed listen on **5000**; Notebook on **8888**.

@@ -24,21 +24,22 @@ The first interactive shell on a new image prints `/opt/astroai/whats-new.txt` o
 
 ### Home base: AstroAI Studio (coding portal)
 
-1. Launch **`studio`** with tag `26.10` / `latest`.
+1. Launch **`studio`** with tag `latest` (or the current `YY.MM` release).
 2. Open the connect URL — DeepSeek Harness (`dsh`) coding agent in the browser.
-3. Top-right chips (same as openresearch):
-   - **Terminal** → `/astroai-terminal/` (ghostty-web + tmux; **← Studio** returns)
-   - **AstroAI** → `/astroai-agents/` — Install/Setup agents, **Start batch compute**
+3. Top-right chips ([STUDIO.md](STUDIO.md)):
+   - **Terminal** → `/terminal/` (ghostty-web + tmux; `/astroai-terminal/` is an alias)
+   - **Agents** → `/hub/#agents` — Install/Setup agents (`/astroai-agents/` alias)
+   - **Compute** → `/hub/#compute` — batch jobs and Ray
 4. Skills: `npx skills add astroai/canfar-skills`. Team review: pick **AstroAI Studio Team** preset (or `canfar-lab panel run` headless).
 5. Laptop: `canfar-lab studio` (same stack, no Skaha proxy).
 
 ```bash
-canfar create --name studio contributed images.canfar.net/astroai/studio:26.10
+canfar create --name studio contributed images.canfar.net/astroai/studio:latest
 ```
 
 ### Alternate home base: AstroAI hub (openresearch)
 
-1. Launch **`openresearch`** with tag `26.10` / `latest`.
+1. Launch **`openresearch`** with tag `latest` (or the current `YY.MM` release).
 2. Open the connect URL. The top-right **AstroAI** pill links to:
    - **Terminal** — ghostty-web + tmux (`/astroai-terminal/`; **← OpenResearch** returns)
    - **AstroAI** — hub at `/astroai-agents/` (or append that path yourself)
@@ -53,7 +54,7 @@ canfar create --name studio contributed images.canfar.net/astroai/studio:26.10
 
 ```bash
 canfar login   # once, from terminal — persists under /arc/home
-canfar create --name orx contributed images.canfar.net/astroai/openresearch:26.10
+canfar create --name orx contributed images.canfar.net/astroai/openresearch:latest
 canfar open <session-id>
 # Hub: …/astroai-agents/ → Start batch compute
 ```
@@ -102,7 +103,7 @@ Manual path: `canfar-lab cluster start`, or launch
 ```bash
 # AstroAI hub → Start batch compute
 # or:
-canfar create --name astroai-compute --cpu 2 --memory 8 contributed images.canfar.net/astroai/ray-manager:26.09
+canfar create --name astroai-compute --cpu 2 --memory 8 contributed images.canfar.net/astroai/ray-manager:latest
 # or: canfar-lab cluster start
 canfar-lab run train.py --cpus 2 --memory 8GiB
 ```
@@ -152,9 +153,10 @@ Compilers and editors are in interactive images; put CUDA/ML stacks in your pixi
 | `marimo` | Reactive `.py` notebooks; starter seeded once under `$SRCDIR/notebooks` (not in `build-all`) |
 | `openresearch` | Autoresearch UI (`orx`) on `:5000`; top-right pill → Terminal (`/astroai-terminal/`), AstroAI hub (`/astroai-agents/`), Compute |
 | `openscience` | OpenScience research workspace on `:5000` with the astroai CADC/VO tools and astronomy Python; bottom-right pill → hub (`/astroai-agents/`) and Compute |
-| `studio` | dsh coding portal on `:5000`; **Terminal** + **AstroAI** chips — see [STUDIO.md](STUDIO.md) |
+| `studio` | dsh coding portal on `:5000`; **Terminal** / **Agents** / **Compute** chips — see [STUDIO.md](STUDIO.md) |
 | `improc-studio` | Same studio on the improc stack. Default Jupyter kernel and marimo use `/opt/astroai/venv/improc` |
 | `specproc-studio` | Same studio on the specproc stack. Default Jupyter kernel and marimo use `/opt/astroai/venv/specproc` |
+| `dsh` | Coding workbench + Lab tab on `:5000` (not in `build-all`) |
 | `ray-manager` | Cluster UI + Ray head; see Ray section |
 | `improc` | Headless FITS/HDF5 image-processing CLIs — see [Image processing (`improc`)](#image-processing-improc) |
 

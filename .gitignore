@@ -5,9 +5,13 @@ _build/
 !.env.example
 *.pyc
 __pycache__/
+.pytest_cache/
+.ruff_cache/
 .DS_Store
 .vscode/
 .idea/
 *.swp
 config/agent/
 .cursor/
+# Resolve fresh in CI / local; image builds float from config/*.txt
+ray/manager/uv.lock

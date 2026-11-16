@@ -10,14 +10,16 @@ Operating guidance for coding agents and maintainers working in `astroai/canfar-
 
 - **Bake Graph (`docker-bake.hcl`):**
   - Untagged `python` stage (Python 3.13 + uv/pixi foundation). `PYTHON_VERSION` (Make/bake, default `3.13`) is the single shared CPython for `base`, `ray-worker`, `ray-manager`, `improc`, and `specproc` — one ABI, no uv-managed second interpreter (`UV_PYTHON_DOWNLOADS=never`).
-  - `make build-all` publishes `base`, `improc`, `specproc`, `openscience`, `openresearch`, `ray-worker`, `ray-manager`, studios `studio` / `improc-studio` / `specproc-studio`, plus `terminal` / `notebook` and science variants `improc-terminal` / `improc-notebook` / `specproc-terminal` / `specproc-notebook`. `marimo` and `vscode` remain buildable targets and are not in that group.
+  - `make build-all` publishes `base`, `improc`, `specproc`, `openscience`, `openresearch`, `ray-worker`, `ray-manager`, studios `studio` / `improc-studio` / `specproc-studio`, plus `terminal` / `notebook` and science variants `improc-terminal` / `improc-notebook` / `specproc-terminal` / `specproc-notebook`. Per image: `make build-<name>` (also `build/<name>`). `dsh`, `marimo`, and `vscode` are buildable and not in that group (`make build-dsh`).
   - `studio` is the studio Dockerfile on `base`. `improc-studio` and `specproc-studio` reuse that Dockerfile with `improc` or `specproc` as the parent, and that science venv is the default Jupyter kernel and the marimo interpreter. `terminal` / `notebook` use the same pattern on `base`, `improc`, and `specproc`.
   - Slim `ray-base` (not a Harbor image) → `ray-worker`; fat `base` → `ray-manager`. Both Ray images are in `build-all`.
 - **Ray Stack (`ray/`):**
   - FastAPI-based Ray cluster manager app (`ray/manager/`) and worker lifecycle helpers (`ray/worker/`).
+  - **Cluster ABI:** manager and worker use the same `PYTHON_VERSION` and the exact `ray[default]==…` pin in `config/ray-deps.txt` (Ray requires matching Ray + Python on every node). Other deps still float; bump the Ray pin and `make build-ray` together.
 - **In-Session Integrations:**
-  - `astroai` CLI and lab utilities: `config/astroai-lab.lock` pins the environment, then the image reinstalls the latest `canfar-lab` release from PyPI.
+  - `astroai` CLI and lab utilities: `config/canfar-lab.txt` (unpinned); images resolve the latest `canfar-lab` from PyPI at build (optional local wheel via bake `canfar-lab-dist` for `dsh`).
   - Writable CADC environment (`/opt/canfar`).
+- **No package lockfiles:** Python deps float at image build from `config/*.txt` (same model as improc/specproc), except the deliberate Ray pin above. `config/desk-assets.lock` is only a content hash for the vendored Desk dock HTML.
 
 ## Verification Commands and Tiers
 
@@ -30,27 +32,16 @@ make lint
 ```
 
 This runs:
-- `make lock-check`: Fails if lockfiles drift from their source requirements (`config/astroai-lab.in`, `config/ray-deps.txt`).
 - `make lint-doc-quota`: Verifies doc assertions.
-- `make test-host`: Runs Docker-free host self-checks (peek/osc52, agent-wizard unit tests, Starship prompt configuration).
+- `make desk-assets-check`: Vendored Desk dock matches `config/desk-assets.lock`.
+- `make test-host`: Docker-free host self-checks (peek/osc52, agent-wizard unit tests, Starship prompt configuration).
 
 Ray manager unit tests:
 ```bash
-(cd ray/manager && uv run ruff check . && uv run pytest tests/ -q)
+(cd ray/manager && uv sync --group dev && uv run ruff check . && uv run pytest tests/ -q)
 ```
 
-### 2. Lockfile Maintenance
-
-When upstream `astroai-lab` or Ray dependencies are updated:
-
-```bash
-make lock-astroai-lab     # regenerate config/astroai-lab.lock
-make lock-ray             # regenerate config/ray-deps.lock
-(cd ray/manager && uv lock)
-make lock-check           # confirm lockfile integrity
-```
-
-### 3. Docker Local Smokes
+### 2. Docker Local Smokes
 
 Requires Docker with buildx:
 
@@ -58,13 +49,14 @@ Requires Docker with buildx:
 make build-all BUILD_TAG=local
 make test-local           # local smoke test on all session images
 make test-improc-local    # verify astronomy improc CLIs
+make test-dsh-local       # dsh Connect + Lab (build-dsh first; optional local canfar-lab wheel)
 make test-ray SMOKE=1     # fast Ray container & UI smoke
 ```
 
 ## Agent PR Hygiene and Rules
 
 1. **Agent-Neutral Instructions:** All agents (Antigravity, Cursor, Codex, Claude, OpenCode, Pi) use this `AGENTS.md` as the single canonical repository guide. Do not create agent-specific instruction duplicates.
-2. **Lockfile Integrity:** Never weaken or bypass `make lock-check` in CI or local scripts. Maintain strict reproducible dependency discipline.
+2. **Float at build:** Do not reintroduce committed Python lockfiles (`*.lock` under `config/` for pip, or `ray/manager/uv.lock`). The container `TAG` is the user-facing pin.
 3. **No Secrets / Local Tags:** Never commit API keys, `.env` files, or production Harbor credentials.
 4. **Minimal Diffs:** Batch mechanical refactors and avoid noisy whitespace or formatting-only changes across unrelated files.
 5. **Follow `~/src/AGENTS.md`:** Ship changes via GitHub pull requests against `astroai/canfar-containers`.

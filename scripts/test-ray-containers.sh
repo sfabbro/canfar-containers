@@ -51,13 +51,20 @@ check "shared image python (worker)" docker run --rm --entrypoint assert-image-p
 check "shared image python (manager)" docker run --rm --entrypoint assert-image-python "${MGR}" \
     /opt/astroai/venv/ray/bin/python
 check "manager/worker python minor match" bash -c '
-  w=$(docker run --rm --entrypoint python3 "'"${WRK}"'" -c "import sys; print(\"%d.%d\" % sys.version_info[:2])")
-  m=$(docker run --rm --entrypoint python3 "'"${MGR}"'" -c "import sys; print(\"%d.%d\" % sys.version_info[:2])")
+  w=$(docker run --rm --entrypoint /opt/astroai/venv/ray/bin/python "'"${WRK}"'" -c "import sys; print(\"%d.%d\" % sys.version_info[:2])")
+  m=$(docker run --rm --entrypoint /opt/astroai/venv/ray/bin/python "'"${MGR}"'" -c "import sys; print(\"%d.%d\" % sys.version_info[:2])")
   [[ "$w" == "$m" ]] && [[ "$w" == "${PYTHON_VERSION:-3.13}" ]]
+'
+# Ray requires identical Ray + Python on head and workers (cluster ABI).
+check "manager/worker ray version match" bash -c '
+  w=$(docker run --rm --entrypoint /opt/astroai/venv/ray/bin/python "'"${WRK}"'" -c "import ray; print(ray.__version__)")
+  m=$(docker run --rm --entrypoint /opt/astroai/venv/ray/bin/python "'"${MGR}"'" -c "import ray; print(ray.__version__)")
+  pin=$(sed -n "s/^ray\\[default\\]==\\([0-9][^[:space:]]*\\)\$/\\1/p" "'"${ROOT}"'/config/ray-deps.txt" | head -1)
+  [[ -n "$pin" && "$w" == "$m" && "$w" == "$pin" ]]
 '
 check "ray version stamp" docker run --rm --entrypoint bash "${WRK}" -c \
     'test -f /opt/astroai/ray-version.txt && \
-     [[ "$(tr -d "[:space:]" </opt/astroai/ray-version.txt)" == "$(python -c "import ray; print(ray.__version__)")" ]]'
+     [[ "$(tr -d "[:space:]" </opt/astroai/ray-version.txt)" == "$(/opt/astroai/venv/ray/bin/python -c "import ray; print(ray.__version__)")" ]]'
 check "network probe script" docker run --rm --entrypoint test "${WRK}" -x /opt/astroai/bin/ray-network-probe.sh
 check "canfar in manager" docker run --rm --entrypoint python "${MGR}" -c "import canfar"
 check "manager app loads" docker run --rm --entrypoint python "${MGR}" -c "import sys; sys.path.insert(0,'/opt/astroai/ray-manager'); import app"

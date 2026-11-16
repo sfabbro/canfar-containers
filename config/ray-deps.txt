@@ -1,5 +1,7 @@
-# Ray stack (image Python 3.13 — Ray ships cp313 wheels).
-# Unpinned on purpose: the container TAG is the user-facing version, so the
-# image bakes the latest Ray at lock time (regenerate with `make lock-ray`).
-# Manager and worker share this same lockfile, so they stay aligned.
-ray[default]
+# Ray cluster ABI — head (ray-manager) and workers (ray-worker) install from
+# this same file. Ray requires matching Ray + Python on every node:
+#   https://docs.ray.io/en/latest/ray-core/handling-dependencies.html
+# Pin the Ray package only (not a full transitive lock). Bump deliberately and
+# rebuild both images together: make build-ray. Image Python is PYTHON_VERSION
+# (default 3.13) from the shared python bake stage.
+ray[default]==2.60.0

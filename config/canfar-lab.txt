@@ -1,0 +1,3 @@
+# canfar-lab for /opt/canfar (and Ray venvs). Unpinned — resolve at image build.
+# Dockerfiles ADD the PyPI JSON so the layer rebuilds when a release publishes.
+canfar-lab

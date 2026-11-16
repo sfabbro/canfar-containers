@@ -43,18 +43,17 @@ flowchart LR
 | `specproc-terminal` | `…/astroai/specproc-terminal:<tag>` | Contributed | 5000 | Yes |
 | `marimo` | `…/astroai/marimo:<tag>` | Contributed | 5000 | Not in `build-all` |
 | `vscode` | `…/astroai/vscode:<tag>` | Contributed | 5000 | Not in `build-all` |
+| `dsh` | `…/astroai/dsh:<tag>` | Contributed | 5000 | Not in `build-all` (`make build-dsh`) |
 
 OCI label `io.canfar.skaha.session.type` marks `headless` / `contributed` / `notebook`.
-
-> **Rename:** Harbor image `webterm` is now **`terminal`** (`astroai/terminal`);
-> `improc-webterm` → **`improc-terminal`**. Re-register the new names in the
-> Science Portal; leave old Harbor tags until users migrate.
 
 Register **`ray-manager` only** for Ray. Workers stay headless. See [RAY.md](RAY.md).
 Register **`improc-studio`** (Contributed, 5000) and optionally **`improc-terminal`** /
 **`improc-notebook`**. Leave **`improc`** headless for batch. Build/push:
 `make build-improc` / `make push-improc`. `terminal` / `notebook` (and science
-variants) are in `build-all`; `marimo` and `vscode` stay outside that group.
+variants) are in `build-all`; `dsh`, `marimo`, and `vscode` stay outside that group.
+Legacy Harbor names `webterm` / `improc-webterm` were renamed to `terminal` /
+`improc-terminal` — `scripts/harbor-cleanup.sh` still knows the old repos.
 
 **`specproc` and `specproc-studio` are `astroai` catalog images.** The stack
 vendors pPXF and MOOG. `make build-all` and `make push-all` include them.
@@ -80,15 +79,25 @@ Push still requires `docker login images.canfar.net`.
 Build and publish:
 
 ```bash
-# BUILD_TAG must match TAG so ray-manager bakes RAY_IMAGE_TAG for workers
-make build-all BUILD_TAG=26.09
-make push-all TAG=26.09 BUILD_TAG=26.09
-make build-ray BUILD_TAG=26.09 TAG=26.09
-make push-ray TAG=26.09 BUILD_TAG=26.09
+# BUILD_TAG must match TAG so ray-manager bakes RAY_IMAGE_TAG for workers.
+# TAG defaults to current UTC YY.MM when unset.
+TAG=$(date -u +%y.%m)
+make build-all BUILD_TAG="$TAG"
+make push-all TAG="$TAG" BUILD_TAG="$TAG"
+make build-ray BUILD_TAG="$TAG" TAG="$TAG"
+make push-ray TAG="$TAG" BUILD_TAG="$TAG"
 ```
 
-Each `push/<image>` publishes `TAG` and **`latest`**. `make push-all` includes
-`base`. Prefer monthly **`YY.MM`** tags in production docs.
+Each `push/<image>` (and `make push-latest-tags`) publishes `TAG` and **`latest`**
+at the same digest. `make push-all` includes `base`. Prefer monthly **`YY.MM`**
+tags in production docs.
+
+Harbor GC (keeps this month, last month, and `latest` by default):
+
+```bash
+DRY_RUN=1 ./scripts/harbor-cleanup.sh   # preview
+./scripts/harbor-cleanup.sh             # destructive
+```
 
 ## Platform boundary
 
@@ -110,6 +119,7 @@ Session UIs listen at `/` on port **5000**.
 | `openresearch` | Path-rewrite proxy on :5000 + HTML title stick; AstroAI pill (Terminal, hub, Compute); ghostty at `/astroai-terminal/` |
 | `openscience` | Loopback proxy on :5000 (bearer token, loopback Host/Origin, base path via `/__astroai/boot.js`); AstroAI pill (hub, Compute) at `/astroai-agents/` |
 | `studio`, `improc-studio`, `specproc-studio` | dsh `astroai` profile loopback + path-rewrite proxy on :5000 + HTML title stick |
+| `dsh` | dsh + Lab tab (`dsh-canfar-proxy.py`) on :5000; Terminal / Jupyter / VS Code on first open |
 | `ray-manager` | Server-rendered HTML `<title>` = session name |
 
 **Browser tab title:** Skaha sets the pod `hostname` to the session name (lowercase).
@@ -147,9 +157,9 @@ entrypoint, ask the science-platform team for a per-image override that sets
 ## Local smoke
 
 ```bash
-make build/terminal
+make build-terminal
 ./scripts/test-local.sh terminal 5000
-make build/notebook
+make build-notebook
 ./scripts/test-local.sh notebook 8888
 ```
 
@@ -162,7 +172,7 @@ healthy Connect URL, and **scan session logs for fatals** (no `FATAL:`,
 tracebacks, OOM, or studio missing `dsh web token captured…`):
 
 ```bash
-make test-canfar-session IMAGE=studio TAG=26.09   # or terminal / openresearch / …
+make test-canfar-session IMAGE=studio TAG=$(date -u +%y.%m)   # or terminal / openresearch / dsh / …
 ```
 
 Local docker smokes are not a substitute — they miss Skaha Connect URL,
@@ -178,13 +188,15 @@ flowchart TD
 **Interactive HTTP smoke** (works when headless scheduling is unhealthy):
 
 ```bash
-make test-canfar-session IMAGE=terminal TAG=26.09
-make test-canfar-session IMAGE=studio TAG=26.09
-make test-canfar-session IMAGE=vscode TAG=26.09
-make test-canfar-session IMAGE=marimo TAG=26.09
-make test-canfar-session IMAGE=notebook TAG=26.09
-make test-canfar-session IMAGE=openresearch TAG=26.09
-make test-canfar-session IMAGE=openscience TAG=26.09
+TAG=$(date -u +%y.%m)
+make test-canfar-session IMAGE=terminal TAG=$TAG
+make test-canfar-session IMAGE=studio TAG=$TAG
+make test-canfar-session IMAGE=dsh TAG=$TAG
+make test-canfar-session IMAGE=vscode TAG=$TAG
+make test-canfar-session IMAGE=marimo TAG=$TAG
+make test-canfar-session IMAGE=notebook TAG=$TAG
+make test-canfar-session IMAGE=openresearch TAG=$TAG
+make test-canfar-session IMAGE=openscience TAG=$TAG
 ```
 
 
@@ -205,12 +217,17 @@ dsh bundle into the profile and enables it (override the directory with
 `ASTROAI_STUDIO_BAKED_PLUGINS`). On CANFAR the profile layer sets the
 market's `allowRestart: false`, since the startup supervisor restarts dsh.
 
+**dsh notes:** Successor workbench (`make build-dsh` / `test-dsh-local`); not in
+`build-all` until fully verified. Needs `canfar-lab` with `canfar lab web`.
+For an unreleased sibling checkout: build a wheel into `../canfar-lab/dist`,
+then bake with `--set dsh.contexts.canfar-lab-dist=../canfar-lab/dist`.
+
 **Home quota readings:** Prefer CephFS xattrs over raw `df` (`astroai` `disk_usage`). `ceph.dir.rbytes` can lag after writes — expected Ceph behavior. Base ships `getfattr`/`setfattr`, `getfacl`/`setfacl`, `dust`, `eza` (`-@` xattrs), `ncdu`, and `findmnt` for session-side probes (see USAGE Storage).
 
 **Headless in-image verify** (`canfar-verify.sh`):
 
 ```bash
-CANFAR_TEST_QUICK=1 make test-canfar IMAGE=base TAG=26.09
+CANFAR_TEST_QUICK=1 make test-canfar IMAGE=base TAG=$(date -u +%y.%m)
 ```
 
 `test-canfar.sh` waits for completion and expects `All checks passed.` in logs.
@@ -218,7 +235,7 @@ CANFAR_TEST_QUICK=1 make test-canfar IMAGE=base TAG=26.09
 **Agent verb-surface probe (run after EVERY image push):**
 
 ```bash
-make test-canfar-agents TAG=26.09
+make test-canfar-agents TAG=$(date -u +%y.%m)
 ```
 
 Runs `canfar-verify.sh --agents` in a headless `base` session, which invokes
@@ -242,8 +259,8 @@ headless kinds. (See [Platform notes](#platform-notes-headless-pending).)
 **Ray:**
 
 ```bash
-make test-canfar-ray TAG=26.09
-make test-canfar-ray-gpu TAG=26.09
+make test-canfar-ray TAG=$(date -u +%y.%m)
+make test-canfar-ray-gpu TAG=$(date -u +%y.%m)
 ```
 
 Create ray-manager with **≥8 GiB** when exercising Ray Jobs / Dashboard (smaller
@@ -286,8 +303,8 @@ session record ages out. Prefer grepping `[astroai-boot]` for `common-init:ERR`,
   (`CANFAR_LAB_BIN_DIR`) — prefer that over baking agent binaries into images
   or installing onto `/arc` home (NFS is too slow). Skills:
   `npx skills add astroai/canfar-skills`.
-- **Plugins vs skills:** images install `config/astroai-lab.lock`, then reinstall the latest `canfar-lab` from PyPI. That package's plugins are **MCP / tools / rules only**. Skill packs (`SKILL.md`) install via `npx skills add astroai/canfar-skills` (skills.sh), not `canfar-lab agent plugins`.
-- **Release order:** publish `canfar-lab` to PyPI first, then rebuild/push images (the image build installs the latest release). Run `make lock-astroai-lab` when `lock-check` reports drift so CI stays green.
+- **Plugins vs skills:** images install the latest `canfar-lab` from PyPI (`config/canfar-lab.txt`). That package's plugins are **MCP / tools / rules only**. Skill packs (`SKILL.md`) install via `npx skills add astroai/canfar-skills` (skills.sh), not `canfar-lab agent plugins`.
+- **Release order:** publish `canfar-lab` to PyPI first, then rebuild/push images (builds resolve the latest release; the PyPI JSON `ADD` busts the layer cache).
 - Quota warnings fire at session start and via `canfar-lab status` (≈80 / 90 / 95%).
 - User data lifecycle (`canfar-lab save`, `canfar data`) is documented for users in [USAGE.md](USAGE.md).
 
