@@ -39,7 +39,9 @@ class FakeDsh(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802
         SEEN["dsh"] = {"path": self.path, **dict(self.headers.items())}
-        if self.path.startswith("/api/doc"):
+        if self.path.startswith("/api/blob"):
+            body, ctype = b'\x00"/api/x"' * 50_000, "application/octet-stream"
+        elif self.path.startswith("/api/doc"):
             body, ctype = b'{"content": "fetch(\\"/api/x\\")"}', "application/json"
         elif self.path.startswith("/api/file"):
             body, ctype = b"<html><head></head><body>user file</body></html>", "text/html"
@@ -164,7 +166,7 @@ def test_tab_table_and_matching() -> None:
     assert proxy.match_tab("/laboratory")["id"] == "agent"
     assert proxy.match_tab("/api/x")["id"] == "agent"
     labels = {t["id"]: (t["label"], t["icon"]) for t in proxy.TABS}
-    assert labels["agent"] == ("Harness", "") and labels["lab"] == ("Settings", "gear")
+    assert labels["agent"] == ("Studio", "") and labels["lab"] == ("Settings", "gear")
 
 
 def test_bad_tab_file_falls_back(tmp: Path | None = None) -> None:
@@ -172,7 +174,7 @@ def test_bad_tab_file_falls_back(tmp: Path | None = None) -> None:
     bad.write_text('{"tabs": [{"prefix": "no-slash", "port": 1}]}')
     fallback = proxy.load_tabs(str(bad))
     assert [t["id"] for t in fallback] == ["agent", "lab"]
-    assert [t["label"] for t in fallback] == ["Harness", "Settings"]
+    assert [t["label"] for t in fallback] == ["Studio", "Settings"]
     unknown = Path(tempfile.mkdtemp()) / "t.json"
     unknown.write_text('{"tabs": [{"id": "agent", "prefix": "/", "port": 1, "icon": "<svg>"}]}')
     assert proxy.load_tabs(str(unknown))[0]["icon"] == ""  # only known icons
@@ -456,6 +458,36 @@ def test_lab_down_says_starting() -> None:
         assert resp.status == 503 and b"Opening Settings" in data
     finally:
         LAB_TAB["port"] = saved
+
+
+def test_dsh_cookie_is_scoped_to_the_session() -> None:
+    resp, _ = _get(f"{P}/assets/a.js")
+    cookie = next(v for k, v in resp.getheaders() if k.lower() == "set-cookie")
+    assert f"Path={P}/" in cookie and "SameSite=Lax" in cookie, cookie
+
+
+def test_binary_responses_stream_unchanged() -> None:
+    resp, data = _get(f"{P}/api/blob")
+    assert resp.status == 200 and len(data) == 450_000
+    assert resp.getheader("Content-Length") == "450000"
+    assert data == b'\x00"/api/x"' * 50_000  # never prefix-rewritten
+
+
+def test_a_tool_that_keeps_failing_says_so_and_offers_retry() -> None:
+    state = Path(STATE_DIR) / "tool-state"
+    state.mkdir(parents=True, exist_ok=True)
+    marker = state / "terminal.failed"
+    marker.write_text("/scratch/.dsh-x/logs/terminal.log\n")
+    request = Path(STATE_DIR) / "tools" / "terminal"
+    request.unlink(missing_ok=True)
+    resp, data = _get(f"{P}/terminal/", {"Sec-Fetch-Dest": "document"})
+    assert resp.status == 503 and b"could not start" in data and b"terminal.log" in data
+    assert b"http-equiv='refresh'" not in data and not request.exists()
+    resp, data = _get(f"{P}/terminal/?astroai-retry=1", {"Sec-Fetch-Dest": "document"})
+    assert b"Opening Terminal" in data and not marker.exists() and request.exists()
+    (state / "terminal.started").write_text("")
+    _, data = _get(f"{P}/terminal/", {"Sec-Fetch-Dest": "document"})
+    assert b"first time" not in data  # it ran before: this is a restart
 
 
 if __name__ == "__main__":

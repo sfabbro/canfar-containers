@@ -136,8 +136,9 @@ _start_dsh() {
     : >"${_dsh_log}"
     rm -f "${ASTROAI_DSH_TOKEN_FILE}"
     # dsh reads keys from ~/.dsh/.credentials.yaml; inherited env would shadow it.
+    # DSH_TELEMETRY_DISABLED: no session-log export to DeepSeek on thumbs up/down.
     (cd "${SRCDIR}" && exec env -u CANFAR_LAB_WEB_TOKEN -u OPENCODE_API_KEY -u DEEPSEEK_API_KEY \
-        -u GEMINI_API_KEY -u OPENAI_API_KEY -u ANTHROPIC_API_KEY \
+        -u GEMINI_API_KEY -u OPENAI_API_KEY -u ANTHROPIC_API_KEY DSH_TELEMETRY_DISABLED=1 \
         stdbuf -oL -eL dsh --profile astroai --no-open --port "${DSH_PORT}" "${_trust[@]}") \
         >>"${_dsh_log}" 2>&1 &
     DSH_PID=$!
@@ -159,6 +160,10 @@ _start_lab() {
 # On-demand tools. Each serves on loopback; the proxy routes its tab.
 _base="${skaha_sessionid:+/session/contrib/${skaha_sessionid}}"
 declare -A TOOL_PID=() TOOL_STARTED=() TOOL_FAILS=()
+# Markers the proxy reads: <tab>.started (it ran once), <tab>.failed (gave up; holds the log path).
+_tool_state="${_dsh_state}/tool-state"
+mkdir -p "${_tool_state}"
+_DSH_STARTED=0 _DSH_FAILS=0
 _start_tool() {
     local name="$1" log="${_dsh_state}/logs/$1.log"
     case "${name}" in
@@ -193,6 +198,8 @@ _start_tool() {
     esac
     TOOL_PID[${name}]=$!
     TOOL_STARTED[${name}]=${SECONDS}
+    : >"${_tool_state}/${name}.started"
+    rm -f "${_tool_state}/${name}.failed"
     astroai_boot_log "dsh: ${name} pid=${TOOL_PID[${name}]}"
 }
 
@@ -209,6 +216,8 @@ _supervise_tools() {
         if (( ${TOOL_FAILS[${name}]:-0} >= 3 )); then
             # Crashing on start: stop retrying until the tab is opened again.
             astroai_boot_log "dsh: ${name} keeps exiting, see ${_dsh_state}/logs/${name}.log"
+            # The tab shows "could not start" with the log, not an endless "starting".
+            printf '%s\n' "${_dsh_state}/logs/${name}.log" >"${_tool_state}/${name}.failed"
             rm -f "${req}"
             unset "TOOL_PID[${name}]"
             TOOL_FAILS[${name}]=0
@@ -242,6 +251,7 @@ _capture_dsh_token() {
     printf '%s\n' "${tok}" >"${ASTROAI_DSH_TOKEN_FILE}"
 }
 
+_DSH_STARTED=${SECONDS}
 _start_dsh
 _start_lab
 astroai_boot_log "dsh: services started, supervising"
@@ -249,9 +259,19 @@ astroai_boot_log "dsh: services started, supervising"
 while true; do
     kill -0 "${PROXY_PID}" 2>/dev/null || { astroai_boot_log "dsh: proxy died, restarting"; _start_proxy; }
     if ! kill -0 "${DSH_PID}" 2>/dev/null; then
-        astroai_boot_log "dsh: dsh died, restarting (tail ${_dsh_log})"
-        tail -n 20 "${_dsh_log}" | sed 's/^/  dsh: /' >&2 || true
-        _start_dsh
+        (( SECONDS - _DSH_STARTED < 20 )) && _DSH_FAILS=$(( _DSH_FAILS + 1 ))
+        if (( _DSH_FAILS >= 3 )) && [[ ! -e "${_tool_state}/agent.failed" ]]; then
+            astroai_boot_log "dsh: dsh keeps exiting, see ${_dsh_log}; retrying every 30s"
+            cp -f "${_dsh_log}" "${_dsh_state}/logs/dsh-failed.log" 2>/dev/null || true
+            printf '%s\n' "${_dsh_state}/logs/dsh-failed.log" >"${_tool_state}/agent.failed"
+        fi
+        # Back off once it is failing; the Studio tab's "Try again" clears the marker.
+        if [[ ! -e "${_tool_state}/agent.failed" ]] || (( SECONDS - _DSH_STARTED >= 30 )); then
+            astroai_boot_log "dsh: dsh died, restarting (tail ${_dsh_log})"
+            tail -n 20 "${_dsh_log}" | sed 's/^/  dsh: /' >&2 || true
+            _DSH_STARTED=${SECONDS}
+            _start_dsh
+        fi
     fi
     kill -0 "${LAB_PID}" 2>/dev/null || { astroai_boot_log "dsh: lab web died, restarting"; _start_lab; }
     [[ -e "${CANFAR_LAB_RESTART_FILE}" ]] && _restart_tools
@@ -259,6 +279,9 @@ while true; do
     if [[ -z "${_token_logged}" ]] && _capture_dsh_token; then
         astroai_boot_log "dsh web token captured for Skaha Connect redirect"
         _token_logged=1
+        _DSH_FAILS=0
+        rm -f "${_tool_state}/agent.failed"
+        : >"${_tool_state}/agent.started"
     fi
     sleep 2 & wait $!  # a foreground sleep would delay the TERM trap
 done

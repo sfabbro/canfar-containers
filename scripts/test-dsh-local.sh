@@ -116,8 +116,8 @@ grep -q 'data-astroai-api-shim' <<<"${page}" || fail "Agent page has no session-
 lab="$(req -H 'Sec-Fetch-Dest: document' "${BASE}/lab/")"
 grep -q "<base href=\"/session/contrib/${SESSION_ID}/lab/\">" <<<"${lab}" || fail "Lab page has no session <base>"
 grep -q '"active": "lab"' <<<"${lab}" || fail "Lab page tab strip is not on Lab"
-# Tab strip: logo, "Harness", and Settings as a gear icon.
-grep -q '"label": "Harness"' <<<"${lab}" || fail "tab strip has no Harness tab"
+# Tab strip: logo, "Studio", and Settings as a gear icon.
+grep -q '"label": "Studio"' <<<"${lab}" || fail "tab strip has no Studio tab"
 grep -q '"label": "Settings", "href": "[^"]*", "badge": "api/onboarding", "end": true, "icon": "M' <<<"${lab}" \
     || fail "Settings tab is not a gear icon"
 logo="$(req -o /dev/null -w '%{http_code} %{content_type}' "${BASE}/__dsh/logo.png")"
@@ -126,10 +126,18 @@ logo="$(req -o /dev/null -w '%{http_code} %{content_type}' "${BASE}/__dsh/logo.p
 ob="$(onboarding)"
 [[ "$(jget 'd["kind"]' <<<"${ob}")" == "new" ]] || fail "new user not recognised: ${ob}"
 [[ "$(jget 'd["ready"]' <<<"${ob}")" == "False" ]] || fail "new user reported ready: ${ob}"
-[[ "$(jget 'd["next"]' <<<"${ob}")" == "agents" ]] || fail "first step is not agents: ${ob}"
+[[ "$(jget 'd["next"]' <<<"${ob}")" == "studio" ]] || fail "first step is not a Studio key: ${ob}"
 st="$(steps)"
 jget '[s for s in d if s["id"]=="agents"][0]["action"]["agent"]' <<<"${st}" | grep -qx opencode \
     || fail "agents step does not suggest OpenCode: ${st}"
+
+# Studio opens on the code folder, and sessions stay private.
+docker exec "${NAME}" grep -q '"path": "/scratch/src"' /arc/home/testuser/.dsh/storages/workspace.json \
+    || fail "the code folder is not a Studio workspace"
+docker exec "${NAME}" grep -q 'id: session-log-deepseek' \
+    /arc/home/testuser/.dsh/profiles/astroai/cordis.patch.yml || fail "session-log upload not disabled"
+docker exec "${NAME}" sh -c 'tr "\0" "\n" </proc/$(pgrep -f "node /opt/astroai/bin/dsh" | head -1)/environ' \
+    | grep -qx DSH_TELEMETRY_DISABLED=1 || fail "dsh runs without DSH_TELEMETRY_DISABLED"
 
 # The Lab itself only trusts the proxy's bearer.
 direct="$(docker exec "${NAME}" curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:4792/api/state)"
@@ -158,7 +166,7 @@ switch_to() {  # $1 = mode, $2 = expected path
         [[ "$(req -o /dev/null -w '%{http_code}' "${BASE}/")" =~ ^(200|302)$ ]] && return 0
         sleep 2
     done
-    fail "Harness did not come back after the restart"
+    fail "Studio did not come back after the restart"
 }
 switch_to home /arc/home/testuser/src
 docker exec "${NAME}" test -d /arc/home/testuser/src || fail "~/src was not created"
@@ -206,7 +214,7 @@ docker exec "${NAME}" grep -q 'print(43)' /scratch/src/demo/later.py \
 ob="$(onboarding)"
 [[ "$(jget 'd["kind"]' <<<"${ob}")" == "returning" ]] || fail "returning user not recognised: ${ob}"
 code="$(req -b "${JAR}" -H 'Sec-Fetch-Dest: document' -o /dev/null -w '%{http_code}' "${BASE}/")"
-[[ "${code}" == "200" ]] || fail "returning user was not sent straight to the Harness tab (${code})"
+[[ "${code}" == "200" ]] || fail "returning user was not sent straight to the Studio tab (${code})"
 
-echo "OK: dsh Connect, Harness + Settings tabs, code folder switch + restart, private agent data,"
+echo "OK: dsh Connect, Studio + Settings tabs, code folder switch + restart, private agent data,"
 echo "    save, shutdown save, auto-restore in a new session (${IMAGE})"

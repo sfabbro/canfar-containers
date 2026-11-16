@@ -64,7 +64,7 @@ LOGO_ROUTE = "/__dsh/logo.png"
 STATUS_ROUTE = "/api/studio/status"
 
 DEFAULT_TABS: list[dict[str, Any]] = [
-    {"id": "agent", "label": "Harness", "prefix": "/", "port": 3080, "port_env": "DSH_PORT"},
+    {"id": "agent", "label": "Studio", "prefix": "/", "port": 3080, "port_env": "DSH_PORT"},
     {
         "id": "lab",
         "label": "Settings",
@@ -167,6 +167,34 @@ def request_start(tab: dict[str, Any]) -> bool:
     return True
 
 
+def _tool_marker(tab: dict[str, Any], kind: str) -> Path | None:
+    state = os.environ.get("ASTROAI_STUDIO_STATE", "").strip()
+    if not state or not re.fullmatch(r"[a-z0-9-]+", tab["id"]):
+        return None
+    return Path(state) / "tool-state" / f"{tab['id']}.{kind}"
+
+
+def tool_failed_log(tab: dict[str, Any]) -> str | None:
+    """The log path when startup-dsh.sh gave up starting *tab*'s tool."""
+    marker = _tool_marker(tab, "failed")
+    try:
+        return marker.read_text(encoding="utf-8").strip() or "(no log)" if marker else None
+    except OSError:
+        return None
+
+
+def clear_tool_failure(tab: dict[str, Any]) -> None:
+    marker = _tool_marker(tab, "failed")
+    if marker:
+        with contextlib.suppress(OSError):
+            marker.unlink()
+
+
+def tool_ran_before(tab: dict[str, Any]) -> bool:
+    marker = _tool_marker(tab, "started")
+    return bool(marker and marker.exists())
+
+
 def tab_href(tab: dict[str, Any]) -> str:
     return f"{PREFIX}/" if tab["prefix"] == "/" else f"{PREFIX}{tab['prefix']}/"
 
@@ -265,8 +293,15 @@ def index_token_redirect(path: str, cookie_header: str | None) -> str | None:
 
 
 def rewrite_set_cookie(value: str) -> str:
-    """dsh's Strict cookies would be dropped after the portal → workloads hop."""
-    return re.sub(r"(?i)SameSite=Strict", "SameSite=Lax", value)
+    """dsh's Strict cookies would be dropped after the portal → workloads hop.
+
+    ``Path=/`` is shared by every session on the workloads host, so a second
+    open session would overwrite this one's login: scope it to the session.
+    """
+    value = re.sub(r"(?i)SameSite=Strict", "SameSite=Lax", value)
+    if PREFIX:
+        value = re.sub(r"(?i)(;\s*Path=)/(?=\s*(;|$))", rf"\g<1>{PREFIX}/", value)
+    return value
 
 
 def rewrite_location(value: str) -> str:
@@ -614,6 +649,25 @@ def unavailable_html(label: str, *, first_start: bool = False) -> bytes:
     ).encode()
 
 
+def failed_html(label: str, log: str, retry_href: str) -> bytes:
+    """No auto-refresh: the tool gave up, so say so and offer one retry."""
+    return (
+        "<!DOCTYPE html><html><head><meta charset='utf-8'/>"
+        "<meta name='viewport' content='width=device-width,initial-scale=1'/>"
+        f"<title>{html.escape(label)}</title></head>"
+        "<body style='margin:0;font:15px/1.5 system-ui,sans-serif;"
+        "background:#0f1222;color:#e4e6f5'>"
+        "<div style='max-width:560px;margin:18vh auto 0;padding:0 16px'>"
+        f"<h1 style='font-size:20px;margin:0 0 8px'>{html.escape(label)} could not start</h1>"
+        "<p style='color:#a6accd;margin:0 0 16px'>It stopped right after starting, several "
+        "times. The reason is at the end of its log, which you can open from the Terminal "
+        f"tab:<br/><code style='color:#e4e6f5'>{html.escape(log)}</code></p>"
+        f"<a href='{html.escape(retry_href)}' style='display:inline-block;padding:8px 14px;"
+        "border-radius:8px;background:#4f46e5;color:#fff;text-decoration:none'>Try again</a>"
+        "</div></body></html>"
+    ).encode()
+
+
 def _send(handler: BaseHTTPRequestHandler, status: int, body: bytes, ctype: str) -> None:
     handler.send_response(status)
     handler.send_header("Content-Type", ctype)
@@ -794,10 +848,24 @@ def forward(
     except OSError as exc:
         conn.close()
         handler.log_message('"unavailable" %s %s (%s)', tab["id"], path, exc)
+        retry = "astroai-retry" in parse_qs(urlparse(handler.path).query)
+        if retry:
+            clear_tool_failure(tab)
+        failed = tool_failed_log(tab)
+        if failed and wants_tabs(handler, tab_route):
+            page = inject_tabs(
+                failed_html(tab["label"], failed, f"{tab_href(tab)}?astroai-retry=1"),
+                "text/html",
+                tab["id"],
+            )
+            _send(handler, 503, page, "text/html; charset=utf-8")
+            return
         if is_dsh and is_index_path(handler.path):
             _send(handler, 200, STARTING_HTML, "text/html; charset=utf-8")
             return
-        page = unavailable_html(tab["label"], first_start=request_start(tab))
+        first = not tool_ran_before(tab)
+        request_start(tab)
+        page = unavailable_html(tab["label"], first_start=first)
         if wants_tabs(handler, tab_route):
             page = inject_tabs(page, "text/html", tab["id"])
         _send(handler, 503, page, "text/html; charset=utf-8")
@@ -819,6 +887,11 @@ def forward(
             return
 
     head = handler.command == "HEAD"
+    # Only HTML/JS/CSS is ever rewritten. Everything else (downloads, notebooks,
+    # images) streams through, so a large file never sits in the proxy's memory.
+    base_type = ctype.split(";", 1)[0].strip().lower()
+    if not streaming and base_type not in REWRITE_TYPES and base_type != "text/html":
+        streaming = "passthrough"
     raw = b""
     if not streaming and not head:
         raw = upstream.read()
@@ -841,7 +914,10 @@ def forward(
         handler.send_header(key, value)
     for cookie in set_cookies or ():
         handler.send_header("Set-Cookie", cookie)
-    if streaming:
+    if streaming == "passthrough":
+        if upstream.getheader("Content-Length") is not None:
+            handler.send_header("Content-Length", upstream.getheader("Content-Length"))
+    elif streaming:
         handler.send_header("Cache-Control", "no-cache")
         handler.send_header("X-Accel-Buffering", "no")
     elif head:
@@ -859,14 +935,16 @@ def forward(
         if not streaming:
             handler.wfile.write(raw)
             return
+        size = 1 << 16 if streaming == "passthrough" else 8192
         while True:
-            chunk = upstream.read1(8192) if hasattr(upstream, "read1") else upstream.read(8192)
+            chunk = upstream.read1(size) if hasattr(upstream, "read1") else upstream.read(size)
             if not chunk:
                 break
             handler.wfile.write(chunk)
-            handler.wfile.flush()
-    except (BrokenPipeError, ConnectionResetError):
-        pass
+            if streaming != "passthrough":
+                handler.wfile.flush()
+    except (BrokenPipeError, ConnectionResetError, TimeoutError):
+        pass  # client gone, or an event stream idle past the upstream timeout
     finally:
         conn.close()
 
