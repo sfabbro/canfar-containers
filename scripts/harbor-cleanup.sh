@@ -33,7 +33,7 @@
 #   REGISTRY         default: images.canfar.net
 #   OWNER            default: astroai
 #   KEEP_TAGS        default: "<this UTC YY.MM> <prior YY.MM> latest"
-#   KNOWN_REPOS      default: session + ray + science + dsh (+ legacy webterm*)
+#   KNOWN_REPOS      default: session + ray + science (+ legacy webterm*)
 #   CANDIDATE_TAGS   default: current + prior YY.MM tags, latest, local, sha-
 #   DOCKER_CONFIG    default: $HOME/.docker/config.json
 
@@ -45,7 +45,7 @@ OWNER="${OWNER:-astroai}"
 _THIS_MONTH="$(date -u +%y.%m)"
 _PREV_MONTH="$(date -u -d "$(date -u +%Y-%m-15) -1 month" +%y.%m)"
 KEEP_TAGS="${KEEP_TAGS:-${_THIS_MONTH} ${_PREV_MONTH} latest}"
-KNOWN_REPOS="${KNOWN_REPOS:-base terminal vscode notebook marimo openresearch openscience studio dsh improc improc-studio improc-terminal improc-notebook specproc specproc-studio specproc-terminal specproc-notebook ray-manager ray-worker webterm improc-webterm}"
+KNOWN_REPOS="${KNOWN_REPOS:-base terminal vscode notebook marimo openresearch openscience studio improc improc-studio improc-terminal improc-notebook specproc specproc-studio specproc-terminal specproc-notebook ray-manager ray-worker webterm improc-webterm}"
 # webterm / improc-webterm: legacy Harbor names (renamed to terminal / improc-terminal)
 CANDIDATE_TAGS_DEFAULT="${_THIS_MONTH} ${_PREV_MONTH} 26.09 26.08 latest 26.07 26.06 26.05 26.04 25.12 25.11 25.10 25.09 25.08 25.07 25.06 25.05 25.04 25.03 25.02 25.01 24.12 24.11 24.10 24.09 24.08 24.07 local sha-"
 CANDIDATE_TAGS="${CANDIDATE_TAGS:-${CANDIDATE_TAGS_DEFAULT}}"
@@ -80,6 +80,8 @@ api_head_digest() {
         -H "Authorization: Basic ${TOKEN}" \
         -H 'Accept: application/vnd.docker.distribution.manifest.v2+json' \
         -H 'Accept: application/vnd.oci.image.manifest.v1+json' \
+        -H 'Accept: application/vnd.oci.image.index.v1+json' \
+        -H 'Accept: application/vnd.docker.distribution.manifest.list.v2+json' \
         "$1" \
         | tr -d '\r' \
         | awk 'tolower($1) == "docker-content-digest:" {print $2; exit}'
