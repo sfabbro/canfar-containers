@@ -76,14 +76,4 @@ check_image improc-studio "
     esac
 "
 
-check_image improc-terminal "
-    test -f /opt/ghostty-web/server.mjs && echo 'PASS: ghostty-web' || { echo 'FAIL: ghostty-web missing'; missing=\$((missing + 1)); }
-    test -x /skaha/startup.sh && echo 'PASS: skaha startup' || { echo 'FAIL: skaha startup missing'; missing=\$((missing + 1)); }
-"
-
-check_image improc-notebook "
-    jupyter kernelspec list 2>/dev/null | grep -q improc && echo 'PASS: improc jupyter kernel' || { echo 'FAIL: improc jupyter kernel not registered'; missing=\$((missing + 1)); }
-    test -x /skaha/startup.sh && echo 'PASS: skaha startup' || { echo 'FAIL: skaha startup missing'; missing=\$((missing + 1)); }
-"
-
-echo "improc family local smoke passed (improc, improc-studio, improc-terminal, improc-notebook)"
+echo "improc family local smoke passed (improc, improc-studio)"

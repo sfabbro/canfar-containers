@@ -35,22 +35,22 @@ flowchart LR
 | `studio` | `…/astroai/studio:<tag>` | Contributed | 5000 | Yes |
 | `ray-manager` | `…/astroai/ray-manager:<tag>` | Contributed | 5000 | Yes |
 | `ray-worker` | `…/astroai/ray-worker:<tag>` | Headless | — | No — manager launches |
-| `notebook` | `…/astroai/notebook:<tag>` | Notebook | 8888 | Yes |
+| `notebook` | `…/astroai/notebook:<tag>` | Notebook | 8888 | Not in `build-all` |
 | `terminal` | `…/astroai/terminal:<tag>` | Contributed | 5000 | Yes |
-| `improc-notebook` | `…/astroai/improc-notebook:<tag>` | Notebook | 8888 | Yes |
-| `improc-terminal` | `…/astroai/improc-terminal:<tag>` | Contributed | 5000 | Yes |
-| `specproc-notebook` | `…/astroai/specproc-notebook:<tag>` | Notebook | 8888 | Yes |
-| `specproc-terminal` | `…/astroai/specproc-terminal:<tag>` | Contributed | 5000 | Yes |
+| `improc-notebook` | `…/astroai/improc-notebook:<tag>` | Notebook | 8888 | Not in `build-all` |
+| `improc-terminal` | `…/astroai/improc-terminal:<tag>` | Contributed | 5000 | Not in `build-all` |
+| `specproc-notebook` | `…/astroai/specproc-notebook:<tag>` | Notebook | 8888 | Not in `build-all` |
+| `specproc-terminal` | `…/astroai/specproc-terminal:<tag>` | Contributed | 5000 | Not in `build-all` |
 | `marimo` | `…/astroai/marimo:<tag>` | Contributed | 5000 | Not in `build-all` |
 | `vscode` | `…/astroai/vscode:<tag>` | Contributed | 5000 | Not in `build-all` |
 
 OCI label `io.canfar.skaha.session.type` marks `headless` / `contributed` / `notebook`.
 
 Register **`ray-manager` only** for Ray. Workers stay headless. See [RAY.md](RAY.md).
-Register **`improc-studio`** (Contributed, 5000) and optionally **`improc-terminal`** /
-**`improc-notebook`**. Leave **`improc`** headless for batch. Build/push:
-`make build-improc` / `make push-improc`. `terminal` / `notebook` (and science
-variants) are in `build-all`; `marimo` and `vscode` stay outside that group.
+Register **`improc-studio`** (Contributed, 5000). Leave **`improc`** headless for
+batch. Build/push: `make build-improc` / `make push-improc`. `terminal` is in
+`build-all`; `notebook`, `marimo`, `vscode` and the science terminal/notebook
+variants stay outside it (Studio covers them; `make build-<name>`).
 Legacy Harbor names `webterm` / `improc-webterm` were renamed to `terminal` /
 `improc-terminal` — `scripts/harbor-cleanup.sh` still knows the old repos.
 
@@ -210,9 +210,8 @@ passes it as `DSH_VERSION` so the layer cache follows releases). Startup runs
 loopback `:3080`, `canfar lab web` (Settings) on `:4792` and
 `studio-canfar-proxy.py` on `:5000`; JupyterLab, marimo and VS Code start the
 first time their tab is opened. State and logs: `$SCRATCH/.dsh-$USER/`. Needs
-`canfar-lab` with `canfar lab web`; for an unreleased sibling checkout build a
-wheel into `../canfar-lab/dist` and bake with
-`--set studio.contexts.canfar-lab-dist=../canfar-lab/dist`. See [STUDIO.md](STUDIO.md).
+`canfar-lab` with `canfar lab web`; `make` installs a wheel from
+`../canfar-lab/dist` when there is one (`CANFAR_LAB_DIST`). See [STUDIO.md](STUDIO.md).
 
 **Home quota readings:** Prefer CephFS xattrs over raw `df` (`astroai` `disk_usage`). `ceph.dir.rbytes` can lag after writes — expected Ceph behavior. Base ships `getfattr`/`setfattr`, `getfacl`/`setfacl`, `dust`, `eza` (`-@` xattrs), `ncdu`, and `findmnt` for session-side probes (see USAGE Storage).
 

@@ -67,8 +67,9 @@ make test-studio-local            # Connect, tabs, onboarding, save/restore
 python3 scripts/lib/test_studio_canfar_proxy.py
 ```
 
-An unreleased canfar-lab: build a wheel into `../canfar-lab/dist`, then
-`docker buildx bake studio --set studio.contexts.canfar-lab-dist=../canfar-lab/dist`.
+An unreleased canfar-lab: `uv build --wheel --out-dir dist` in `../canfar-lab`.
+`make` then installs that wheel in all three Studio images (`CANFAR_LAB_DIST=`
+builds from PyPI instead).
 
 ## Launch
 

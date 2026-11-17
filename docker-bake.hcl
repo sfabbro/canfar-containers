@@ -18,12 +18,19 @@ variable "DSH_VERSION" {
   default = "newest"
 }
 
+# Local canfar-lab wheel dir for the Studio images (empty: latest from PyPI).
+# make sets it to ../canfar-lab/dist when that holds a wheel.
+variable "CANFAR_LAB_DIST" {
+  default = ""
+}
+
 variable "PYTHON_VERSION" {
   default = "3.13"
 }
 
-# make build-all / release-push. marimo and vscode remain as targets and
-# are not in this group (make build-marimo). ray-base and python are bake parents,
+# make build-all / release-push. marimo, vscode, notebook and the improc/specproc
+# terminal and notebook variants remain as targets, not in this group (Studio
+# covers them; make build-<name>). ray-base and python are bake parents,
 # not Harbor images.
 group "default" {
   targets = [
@@ -38,11 +45,6 @@ group "default" {
     "improc-studio",
     "specproc-studio",
     "terminal",
-    "notebook",
-    "improc-terminal",
-    "improc-notebook",
-    "specproc-terminal",
-    "specproc-notebook",
   ]
 }
 
@@ -60,20 +62,15 @@ group "release" {
     "improc-studio",
     "specproc-studio",
     "terminal",
-    "notebook",
-    "improc-terminal",
-    "improc-notebook",
-    "specproc-terminal",
-    "specproc-notebook",
   ]
 }
 
 group "improc" {
-  targets = ["improc", "improc-studio", "improc-terminal", "improc-notebook"]
+  targets = ["improc", "improc-studio"]
 }
 
 group "specproc" {
-  targets = ["specproc", "specproc-studio", "specproc-terminal", "specproc-notebook"]
+  targets = ["specproc", "specproc-studio"]
 }
 
 # Untagged bake parent. Never a Harbor image.
@@ -152,6 +149,7 @@ target "openscience" {
 target "studio" {
   inherits   = ["_interface"]
   dockerfile = "dockerfiles/studio/Dockerfile"
+  contexts   = CANFAR_LAB_DIST != "" ? { "canfar-lab-dist" = CANFAR_LAB_DIST } : {}
   tags       = ["${REGISTRY}/${OWNER}/studio:${TAG}"]
   args = {
     DSH_VERSION = "${DSH_VERSION}"
@@ -220,9 +218,10 @@ target "improc" {
 target "improc-studio" {
   context    = "."
   dockerfile = "dockerfiles/studio/Dockerfile"
-  contexts = {
-    "${REGISTRY}/${OWNER}/improc:${TAG}" = "target:improc"
-  }
+  contexts = merge(
+    { "${REGISTRY}/${OWNER}/improc:${TAG}" = "target:improc" },
+    CANFAR_LAB_DIST != "" ? { "canfar-lab-dist" = CANFAR_LAB_DIST } : {},
+  )
   tags = ["${REGISTRY}/${OWNER}/improc-studio:${TAG}"]
   args = {
     REGISTRY    = "${REGISTRY}"
@@ -269,9 +268,10 @@ target "specproc" {
 target "specproc-studio" {
   context    = "."
   dockerfile = "dockerfiles/studio/Dockerfile"
-  contexts = {
-    "${REGISTRY}/${OWNER}/specproc:${TAG}" = "target:specproc"
-  }
+  contexts = merge(
+    { "${REGISTRY}/${OWNER}/specproc:${TAG}" = "target:specproc" },
+    CANFAR_LAB_DIST != "" ? { "canfar-lab-dist" = CANFAR_LAB_DIST } : {},
+  )
   tags = ["${REGISTRY}/${OWNER}/specproc-studio:${TAG}"]
   args = {
     REGISTRY    = "${REGISTRY}"

@@ -46,11 +46,10 @@ flowchart TB
 | `ray-manager` | Ray head + control panel + Dashboard ([RAY.md](docs/RAY.md)) | Contributed |
 | `studio` | CANFAR Studio: chat agent, Terminal, JupyterLab, marimo, VS Code — [STUDIO.md](docs/STUDIO.md) | Contributed |
 | `improc-studio` / `specproc-studio` | Same studio; science venv is default Python | Contributed |
-| `terminal` / `notebook` | Ghostty web terminal / JupyterLab on base | Contributed / Notebook |
-| `improc-terminal` / `improc-notebook` | Same on improc | Contributed / Notebook |
-| `specproc-terminal` / `specproc-notebook` | Same on specproc | Contributed / Notebook |
+| `terminal` | Ghostty web terminal on base | Contributed |
 
-Not in `make build-all` (still buildable): `marimo`, `vscode`.
+Not in `make build-all` (still buildable; Studio covers them): `marimo`, `vscode`,
+`notebook`, `improc-terminal`, `improc-notebook`, `specproc-terminal`, `specproc-notebook`.
 
 ## Documentation
 
@@ -107,7 +106,7 @@ examples/      improc + Ray smokes
 ## Design
 
 - **Same images for CPU and GPU** — choose the node in the portal; CUDA/ML stacks via pixi/uv in the project.
-- **Bake graph:** untagged `python` stage → fat `base` → `studio` / `terminal` / `notebook`, `openscience`, `openresearch`, `improc` → `improc-*`, `specproc` → `specproc-*`, and `ray-manager`. Slim `ray-base` (from that python stage, not published) → `ray-worker`. `marimo` and `vscode` are outside `build-all`. Python deps float at build from `config/*.txt` (latest PyPI `canfar-lab`; optional local wheel via bake `canfar-lab-dist` for `studio`).
+- **Bake graph:** untagged `python` stage → fat `base` → `studio` / `terminal`, `openscience`, `openresearch`, `improc` → `improc-studio`, `specproc` → `specproc-studio`, and `ray-manager`. Slim `ray-base` (from that python stage, not published) → `ray-worker`. `marimo`, `vscode`, `notebook` and the science terminal/notebook variants are outside `build-all`. Python deps float at build from `config/*.txt` (latest PyPI `canfar-lab`; Studio images take a wheel from `../canfar-lab/dist` when there is one).
 - **One Python:** `PYTHON_VERSION` (default `3.13`) is shared by `base`, `ray-worker`, `ray-manager`, `improc`, and `specproc`. uv is forbidden from downloading a second interpreter (`UV_PYTHON_DOWNLOADS=never`); science/Ray venvs use `uv venv --python python3` and `assert-image-python`.
 - **Fast session disks:** `WORK` is `$SCRATCH/src` when `/srcdir` is the container overlay (OOM-fragile) and `/scratch` is a volume; `SCRATCH` (`/scratch`) holds data and caches. Both are session-private. `/arc/home` and `/arc/projects` are shared across sessions. Persist with `canfar-lab save` / `git push`.
 - **Skaha types:** Contributed listen on **5000**; Notebook on **8888**.

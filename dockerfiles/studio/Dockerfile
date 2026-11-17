@@ -26,9 +26,10 @@ ARG GHOSTTY_WEB_VERSION=0.4.0-next.20.g1858a59
 ARG NODE_PTY_VERSION=1.1.0
 ARG WS_VERSION=8.21.3
 
-# Optional canfar-lab wheel(s) newer than PyPI, e.g. an unreleased build:
-#   docker buildx bake dsh --set dsh.contexts.canfar-lab-dist=../canfar-lab/dist
-# Empty by default: the image keeps the PyPI canfar-lab from base.
+# Optional canfar-lab wheel(s) newer than PyPI. make passes ../canfar-lab/dist
+# when it holds a wheel (CANFAR_LAB_DIST); by hand:
+#   docker buildx bake studio --set studio.contexts.canfar-lab-dist=../canfar-lab/dist
+# Empty otherwise: the image keeps the PyPI canfar-lab from base.
 FROM scratch AS canfar-lab-dist
 
 FROM ${REGISTRY}/${OWNER}/${BASE_NAME}:${TAG}

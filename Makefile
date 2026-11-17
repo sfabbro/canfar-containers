@@ -19,6 +19,15 @@ IMAGE_PREFIX := $(REGISTRY)/$(OWNER)
 # test-agent-local). Without it, a docker-container buildx driver only caches.
 BAKE_FLAGS ?= --load
 
+# Studio images install canfar-lab from this wheel dir when it has a wheel
+# (sibling checkout: cd ../canfar-lab && uv build --wheel --out-dir dist).
+# CANFAR_LAB_DIST= (empty) builds with the latest canfar-lab from PyPI.
+CANFAR_LAB_DIST ?= $(if $(wildcard ../canfar-lab/dist/canfar_lab-*.whl),$(abspath ../canfar-lab/dist))
+export CANFAR_LAB_DIST
+ifneq ($(CANFAR_LAB_DIST),)
+BAKE_FLAGS += --allow=fs.read=$(CANFAR_LAB_DIST)
+endif
+
 # ---------------------------------------------------------------------------
 # Image lists (single source of truth for Make; keep in sync with docker-bake.hcl)
 # ---------------------------------------------------------------------------
@@ -28,19 +37,18 @@ DEFAULT_IMAGES := \
 	base improc specproc openscience openresearch \
 	ray-worker ray-manager \
 	studio improc-studio specproc-studio \
-	terminal notebook \
-	improc-terminal improc-notebook \
-	specproc-terminal specproc-notebook
+	terminal
 
-# Buildable Harbor images not in build-all (bake targets exist)
-EXTRA_IMAGES := marimo vscode
+# Buildable, not in build-all (Studio covers them; bake targets kept)
+EXTRA_IMAGES := marimo vscode notebook \
+	improc-terminal improc-notebook specproc-terminal specproc-notebook
 
 ALL_IMAGES := $(DEFAULT_IMAGES) $(EXTRA_IMAGES)
 
 SESSION_IMAGES := $(DEFAULT_IMAGES)
 RAY_IMAGES := ray-manager ray-worker
-IMPROC_IMAGES := improc improc-studio improc-terminal improc-notebook
-SPECPROC_IMAGES := specproc specproc-studio specproc-terminal specproc-notebook
+IMPROC_IMAGES := improc improc-studio
+SPECPROC_IMAGES := specproc specproc-studio
 
 # bake parents only — never push to Harbor
 INTERNAL_IMAGES := python ray-base
@@ -263,9 +271,9 @@ release-push-specproc: ## bake+push specproc family as :$(TAG) and :latest
 .PHONY: test-local test-agent-local test-studio-local test-ray
 .PHONY: test-improc-local test-specproc-local test-base-local test-host
 
-test-local: ## verify session images (parallel)
+test-local: ## verify session images (parallel; ray-worker: make test-ray)
 	@fails=0; pids=(); \
-	for img in $(DEFAULT_IMAGES); do \
+	for img in $(filter-out ray-worker,$(DEFAULT_IMAGES)); do \
 		./scripts/test-local.sh "$$img" --verify-only & pids+=($$!); \
 	done; \
 	for pid in "$${pids[@]}"; do wait "$$pid" || fails=$$((fails + 1)); done; \

@@ -123,7 +123,7 @@ RUN tag="$(jq -r .tag_name /tmp/rclone-release.json)" \
     && curl -fsSL "https://github.com/rclone/rclone/releases/download/${tag}/SHA256SUMS" \
         | grep " rclone-${tag}-linux-amd64.deb\$" | sha256sum -c - \
     && dpkg -i "rclone-${tag}-linux-amd64.deb" \
-    && rclone version | head -1 \
+    && rclone version | sed -n 1p \
     && rm -f /tmp/rclone-*.deb /tmp/rclone-release.json
 
 # Node.js LTS (official tarball + sha256 supply-chain check) so every session
