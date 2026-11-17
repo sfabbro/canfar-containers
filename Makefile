@@ -24,9 +24,8 @@ BAKE_FLAGS ?= --load
 # CANFAR_LAB_DIST= (empty) builds with the latest canfar-lab from PyPI.
 CANFAR_LAB_DIST ?= $(if $(wildcard ../canfar-lab/dist/canfar_lab-*.whl),$(abspath ../canfar-lab/dist))
 export CANFAR_LAB_DIST
-ifneq ($(CANFAR_LAB_DIST),)
-BAKE_FLAGS += --allow=fs.read=$(CANFAR_LAB_DIST)
-endif
+BAKE_ALLOW := $(if $(CANFAR_LAB_DIST),--allow=fs.read=$(CANFAR_LAB_DIST))
+BAKE_FLAGS += $(BAKE_ALLOW)
 
 # ---------------------------------------------------------------------------
 # Image lists (single source of truth for Make; keep in sync with docker-bake.hcl)
@@ -249,19 +248,19 @@ push-latest-tags: ## point :latest at existing :$(TAG) digests in Harbor
 
 .PHONY: release-push release-push-ray release-push-improc release-push-specproc
 release-push: ## bake+push the public release group to Harbor as :$(TAG) and :latest
-	TAG=$(TAG) docker buildx bake --push release
+	TAG=$(TAG) docker buildx bake --push $(BAKE_ALLOW) release
 	@$(MAKE) push-latest-tags IMAGES="$(SESSION_IMAGES)" TAG=$(TAG)
 
 release-push-ray: ## bake+push ray-manager + ray-worker as :$(TAG) and :latest
-	TAG=$(TAG) docker buildx bake --push ray-manager ray-worker
+	TAG=$(TAG) docker buildx bake --push $(BAKE_ALLOW) ray-manager ray-worker
 	@$(MAKE) push-latest-tags IMAGES="$(RAY_IMAGES)" TAG=$(TAG)
 
 release-push-improc: ## bake+push improc family as :$(TAG) and :latest
-	TAG=$(TAG) docker buildx bake --push $(IMPROC_IMAGES)
+	TAG=$(TAG) docker buildx bake --push $(BAKE_ALLOW) $(IMPROC_IMAGES)
 	@$(MAKE) push-latest-tags IMAGES="$(IMPROC_IMAGES)" TAG=$(TAG)
 
 release-push-specproc: ## bake+push specproc family as :$(TAG) and :latest
-	TAG=$(TAG) docker buildx bake --push $(SPECPROC_IMAGES)
+	TAG=$(TAG) docker buildx bake --push $(BAKE_ALLOW) $(SPECPROC_IMAGES)
 	@$(MAKE) push-latest-tags IMAGES="$(SPECPROC_IMAGES)" TAG=$(TAG)
 
 # ---------------------------------------------------------------------------
