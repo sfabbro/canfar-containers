@@ -30,7 +30,7 @@ The first interactive shell on a new image prints `/opt/astroai/whats-new.txt` o
    - **Terminal** — ghostty-web + tmux
    - **JupyterLab**, **marimo**, **VS Code** — started the first time you open them
    - **⚙ Settings** — API keys, agents (Claude Code, Codex, …), code folder, saves
-3. Team review: pick the **AstroAI Studio Team** preset in Chat (or `canfar lab studio review` headless).
+3. Team review: pick the **CANFAR Studio Team** preset in Chat (or `canfar lab studio review` headless).
 4. Laptop: `canfar lab studio` (dsh only, no tab strip).
 
 ```bash

@@ -640,19 +640,25 @@ HOP_BY_HOP = {
 
 STARTING_HTML = (
     b"<!DOCTYPE html><html><head><meta charset='utf-8'/>"
+    b"<meta name='viewport' content='width=device-width,initial-scale=1'/>"
     b"<meta http-equiv='refresh' content='3'/><title>CANFAR Studio</title></head>"
-    b"<body style='font-family:system-ui,sans-serif;padding:2rem;line-height:1.5;"
-    b"background:#0f1222;color:#e4e6f5'><h1>Your session is starting</h1>"
-    b"<p>This page refreshes by itself. It usually takes under a minute.</p></body></html>"
+    b"<body style='margin:0;font:15px/1.5 system-ui,sans-serif;"
+    b"background:#0f1222;color:#e4e6f5'>"
+    b"<div style='max-width:520px;margin:18vh auto 0;padding:0 16px'>"
+    b"<h1 style='font-size:20px;margin:0 0 8px'>Your session is starting</h1>"
+    b"<p style='color:#a6accd;margin:0'>Usually under a minute; this page refreshes by itself. "
+    b"Still here after 5 minutes? Check the session's logs on the CANFAR portal.</p>"
+    b"</div></body></html>"
 )
 
 
 def unavailable_html(label: str, *, first_start: bool = False) -> bytes:
     note = (
-        "Starting it for the first time in this session. This takes a few seconds."
+        "First start in this session: a few seconds."
         if first_start
         else "It is starting or restarting."
     )
+    label = html.escape(label)
     return (
         "<!DOCTYPE html><html><head><meta charset='utf-8'/>"
         "<meta name='viewport' content='width=device-width,initial-scale=1'/>"
@@ -676,9 +682,9 @@ def failed_html(label: str, log: str, retry_href: str) -> bytes:
         "background:#0f1222;color:#e4e6f5'>"
         "<div style='max-width:560px;margin:18vh auto 0;padding:0 16px'>"
         f"<h1 style='font-size:20px;margin:0 0 8px'>{html.escape(label)} could not start</h1>"
-        "<p style='color:#a6accd;margin:0 0 16px'>It stopped right after starting, several "
-        "times. The reason is at the end of its log, which you can open from the Terminal "
-        f"tab:<br/><code style='color:#e4e6f5'>{html.escape(log)}</code></p>"
+        "<p style='color:#a6accd;margin:0 0 16px'>It exited right after starting, several "
+        "times. To see why, run this in the Terminal tab:<br/>"
+        f"<code style='color:#e4e6f5'>tail -50 {html.escape(log)}</code></p>"
         f"<a href='{html.escape(retry_href)}' style='display:inline-block;padding:8px 14px;"
         "border-radius:8px;background:#4f46e5;color:#fff;text-decoration:none'>Try again</a>"
         "</div></body></html>"

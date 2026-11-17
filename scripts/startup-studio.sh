@@ -210,15 +210,16 @@ _start_tool() {
                 --base-url "${_base}/marimo" "${SRCDIR}") >>"${log}" 2>&1 &
             ;;
         vscode)
-            # Settings and extensions on scratch: fast, but fresh every session.
-            mkdir -p "${_dsh_state}/vscode-data/Machine" "${_dsh_state}/vscode-extensions"
+            # Settings and extensions in ~/.openvscode-server (shared with the
+            # VS Code image); the image's machine defaults are refreshed each start.
+            local vsdata="${HOME}/.openvscode-server"
+            mkdir -p "${vsdata}/data/Machine"
             cp -f /opt/openvscode-server/data/Machine/settings.json \
-                "${_dsh_state}/vscode-data/Machine/settings.json" 2>/dev/null || true
+                "${vsdata}/data/Machine/settings.json" 2>/dev/null || true
             # The openvscode-server wrapper does not exec node: own group, so a stop reaches it.
             setsid openvscode-server --host 127.0.0.1 --port "${ASTROAI_VSCODE_PORT}" \
                 --without-connection-token --server-base-path "${_base}/vscode" \
-                --user-data-dir "${_dsh_state}/vscode-data" \
-                --extensions-dir "${_dsh_state}/vscode-extensions" \
+                --server-data-dir "${vsdata}" \
                 --default-folder "${SRCDIR}" >>"${log}" 2>&1 &
             ;;
         *) return 1 ;;

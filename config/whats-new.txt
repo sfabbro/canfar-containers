@@ -1,8 +1,8 @@
 # id: 26.11-tools
 
-What's new in this AstroAI image
-────────────────────────────────
-More command-line tools on every AstroAI image:
+What's new in this image
+────────────────────────
+More command-line tools in every image:
 
   tmux, screen          keep a shell running when the page closes
   rclone                copy to and from cloud storage (current release)
@@ -14,4 +14,4 @@ More command-line tools on every AstroAI image:
 
 Still here: vos-sync (parallel VOSpace copy) and vosfs (VOSpace from Python).
 
-Shown once for this image. Again: cat /opt/astroai/whats-new.txt
+Shown once. To see it again: cat /opt/astroai/whats-new.txt

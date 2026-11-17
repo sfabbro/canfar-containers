@@ -54,9 +54,10 @@ The image patches dsh so it does not force DeepSeek-only onboarding.
 ## State and logs
 
 Per session, on scratch: `$SCRATCH/.dsh-$USER/` (`logs/`, `tool-state/`, pnpm
-store, corepack, Jupyter runtime, VS Code data). Chat history follows the dsh state root on scratch and is carried by Settings
-snapshots. Durable: `~/.dsh` (profile, keys), `~/.canfar/lab` (keys, settings,
-snapshots), `~/.jupyter`.
+store, corepack, Jupyter runtime). Chat history follows the dsh state root on
+scratch and is carried by Settings snapshots. Durable, in your home: `~/.dsh`
+(profile, keys), `~/.canfar/lab` (keys, settings, snapshots), `~/.jupyter`,
+`~/.openvscode-server` (VS Code settings and extensions).
 
 ## Build and test
 

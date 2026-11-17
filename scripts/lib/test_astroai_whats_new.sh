@@ -67,7 +67,7 @@ def run(home: str) -> str:
     return b"".join(chunks).decode("utf-8", "replace")
 
 first = run(f"{home_root}/first")
-if "What's new in this AstroAI image" not in first:
+if "What's new in this image" not in first:
     sys.stderr.write(f"FAIL: first shell missed the note:\n{first}\n")
     sys.exit(1)
 if "# id:" in first:
@@ -81,7 +81,7 @@ if seen != os.environ["NEWS_ID"]:
     sys.exit(1)
 
 second = run(f"{home_root}/first")
-if "What's new in this AstroAI image" in second:
+if "What's new in this image" in second:
     sys.stderr.write(f"FAIL: second shell repeated the note:\n{second}\n")
     sys.exit(1)
 
@@ -116,7 +116,7 @@ while True:
 proc.wait(timeout=5)
 os.close(master)
 silenced = b"".join(chunks).decode("utf-8", "replace")
-if "What's new in this AstroAI image" in silenced:
+if "What's new in this image" in silenced:
     sys.stderr.write("FAIL: ASTROAI_WHATS_NEW=0 still printed\n")
     sys.exit(1)
 if os.path.exists(f"{home_root}/off/.canfar/lab/whats-new-seen"):

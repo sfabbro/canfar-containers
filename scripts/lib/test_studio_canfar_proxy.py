@@ -349,7 +349,7 @@ def test_opening_a_stopped_tool_requests_its_start() -> None:
     request.unlink(missing_ok=True)
     resp, data = _get(f"{P}/jupyter/lab", {"Sec-Fetch-Dest": "document"})
     assert resp.status == 503 and b"Opening JupyterLab" in data
-    assert b"first time" in data and b"astroai-tabs-config" in data
+    assert b"First start" in data and b"astroai-tabs-config" in data
     assert request.exists()
     # A tool without "start" (the Lab) never drops a request.
     saved = LAB_TAB["port"]
@@ -493,7 +493,7 @@ def test_a_tool_that_keeps_failing_says_so_and_offers_retry() -> None:
     assert b"Opening Terminal" in data and not marker.exists() and request.exists()
     (state / "terminal.started").write_text("")
     _, data = _get(f"{P}/terminal/", {"Sec-Fetch-Dest": "document"})
-    assert b"first time" not in data  # it ran before: this is a restart
+    assert b"First start" not in data  # it ran before: this is a restart
 
 
 if __name__ == "__main__":
